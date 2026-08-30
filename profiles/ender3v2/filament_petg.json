@@ -3,24 +3,68 @@
   "name": "Generic PETG @claude-pipeline",
   "from": "user",
   "instantiation": "true",
-  "compatible_printers": ["Creality Ender-3 V2 0.4 nozzle"],
+  "compatible_printers": [
+    "Creality Ender-3 V2 0.4 nozzle"
+  ],
   "inherits": "Creality Generic PETG",
-  "filament_type": ["PETG"],
-  "filament_diameter": ["1.75"],
-  "nozzle_temperature": ["240"],
-  "nozzle_temperature_initial_layer": ["240"],
-  "nozzle_temperature_range_low": ["220"],
-  "nozzle_temperature_range_high": ["260"],
-  "hot_plate_temp": ["75"],
-  "hot_plate_temp_initial_layer": ["80"],
-  "textured_plate_temp": ["75"],
-  "textured_plate_temp_initial_layer": ["80"],
-  "fan_min_speed": ["30"],
-  "fan_max_speed": ["50"],
-  "close_fan_the_first_x_layers": ["3"],
-  "filament_max_volumetric_speed": ["8"],
-  "filament_density": ["1.27"],
-  "filament_cost": ["25"],
-  "filament_retraction_length": ["6"],
-  "slow_down_layer_time": ["10"]
+  "filament_type": [
+    "PETG"
+  ],
+  "filament_diameter": [
+    "1.75"
+  ],
+  "nozzle_temperature": [
+    "240"
+  ],
+  "nozzle_temperature_initial_layer": [
+    "240"
+  ],
+  "nozzle_temperature_range_low": [
+    "220"
+  ],
+  "nozzle_temperature_range_high": [
+    "260"
+  ],
+  "hot_plate_temp": [
+    "75"
+  ],
+  "hot_plate_temp_initial_layer": [
+    "80"
+  ],
+  "textured_plate_temp": [
+    "75"
+  ],
+  "textured_plate_temp_initial_layer": [
+    "80"
+  ],
+  "fan_min_speed": [
+    "30"
+  ],
+  "fan_max_speed": [
+    "50"
+  ],
+  "close_fan_the_first_x_layers": [
+    "3"
+  ],
+  "filament_max_volumetric_speed": [
+    "8"
+  ],
+  "filament_density": [
+    "1.27"
+  ],
+  "filament_cost": [
+    "25"
+  ],
+  "filament_retraction_length": [
+    "6"
+  ],
+  "slow_down_layer_time": [
+    "10"
+  ],
+  "cool_plate_temp": [
+    "75"
+  ],
+  "cool_plate_temp_initial_layer": [
+    "80"
+  ]
 }

@@ -177,6 +177,51 @@ for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material',
   };
 }
 
+function setCustomOption(name, select) {
+  let opt = [...$('ps_material').options].find(o => o.value === 'custom');
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = 'custom';
+    $('ps_material').appendChild(opt);
+  }
+  opt.textContent = `custom — ${name}`;
+  if (select) {
+    $('ps_material').value = 'custom';
+    $('ps_material').dispatchEvent(new Event('change'));
+  }
+}
+
+$('matlookup_btn').onclick = async () => {
+  const query = $('matlookup').value.trim();
+  if (!query) { log('type a filament name to look up', 'bad'); return; }
+  setBusy(true);
+  log(`looking up filament: ${query}…`, 'dim');
+  try {
+    const res = await api('/api/material_lookup', { query });
+    setCustomOption(res.name, true);
+    const a = res.applied;
+    log(`${res.name} → ${res.class.toUpperCase()} rules · nozzle ${a.nozzle}°` +
+        (a.nozzle_first !== a.nozzle ? ` (first ${a.nozzle_first}°)` : '') +
+        ` · bed ${a.bed}°` + (a.bed_first !== a.bed ? ` (first ${a.bed_first}°)` : '') +
+        ` · ${res.source}`, 'ok');
+    for (const n of res.notes || []) log('⚠ ' + n, 'warn');
+    if (res.alternatives?.length)
+      log('also matched: ' + res.alternatives.join(', '), 'dim');
+  } catch (e) { log(e.message, 'bad'); }
+  setBusy(false);
+};
+
+// restore a stored lookup so "custom" survives restarts
+(async () => {
+  try {
+    const meta = await (await fetch('/api/material_custom')).json();
+    if (meta.name) setCustomOption(meta.name, false);
+    if ($('ps_material').value !== 'custom') return;
+    // persisted selection was custom; make sure the option label is right
+    if (!meta.name) $('ps_material').value = 'pla';
+  } catch {}
+})();
+
 $('units').textContent = units;
 $('units').onclick = () => {
   // convert visible inputs in place, then re-label
@@ -213,6 +258,51 @@ for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material',
     setButtons();
   };
 }
+
+function setCustomOption(name, select) {
+  let opt = [...$('ps_material').options].find(o => o.value === 'custom');
+  if (!opt) {
+    opt = document.createElement('option');
+    opt.value = 'custom';
+    $('ps_material').appendChild(opt);
+  }
+  opt.textContent = `custom — ${name}`;
+  if (select) {
+    $('ps_material').value = 'custom';
+    $('ps_material').dispatchEvent(new Event('change'));
+  }
+}
+
+$('matlookup_btn').onclick = async () => {
+  const query = $('matlookup').value.trim();
+  if (!query) { log('type a filament name to look up', 'bad'); return; }
+  setBusy(true);
+  log(`looking up filament: ${query}…`, 'dim');
+  try {
+    const res = await api('/api/material_lookup', { query });
+    setCustomOption(res.name, true);
+    const a = res.applied;
+    log(`${res.name} → ${res.class.toUpperCase()} rules · nozzle ${a.nozzle}°` +
+        (a.nozzle_first !== a.nozzle ? ` (first ${a.nozzle_first}°)` : '') +
+        ` · bed ${a.bed}°` + (a.bed_first !== a.bed ? ` (first ${a.bed_first}°)` : '') +
+        ` · ${res.source}`, 'ok');
+    for (const n of res.notes || []) log('⚠ ' + n, 'warn');
+    if (res.alternatives?.length)
+      log('also matched: ' + res.alternatives.join(', '), 'dim');
+  } catch (e) { log(e.message, 'bad'); }
+  setBusy(false);
+};
+
+// restore a stored lookup so "custom" survives restarts
+(async () => {
+  try {
+    const meta = await (await fetch('/api/material_custom')).json();
+    if (meta.name) setCustomOption(meta.name, false);
+    if ($('ps_material').value !== 'custom') return;
+    // persisted selection was custom; make sure the option label is right
+    if (!meta.name) $('ps_material').value = 'pla';
+  } catch {}
+})();
 
 $('units').textContent = units;
   for (const el of $('params').querySelectorAll('input[data-param]')) {

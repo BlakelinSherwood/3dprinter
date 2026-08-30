@@ -176,6 +176,13 @@
         </div>
         <label class="check"><input type="checkbox" id="ps_supports"> tree supports</label>
         <label class="check"><input type="checkbox" id="ps_brim"> brim</label>
+        <div class="field" style="grid-column: 1 / -1">
+          <label for="matlookup">filament lookup</label>
+          <div class="row" style="margin-top:0; gap:6px">
+            <input type="text" id="matlookup" placeholder="e.g. Overture Matte PLA, Polymaker PETG" spellcheck="false" style="flex:1">
+            <button id="matlookup_btn" title="Look up this filament and apply its temperatures" style="flex:0 0 44px">&#128269;</button>
+          </div>
+        </div>
         <div class="field">
           <label for="ps_material">material</label>
           <select id="ps_material">

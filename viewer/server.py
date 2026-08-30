@@ -567,6 +567,190 @@ def gcode_estimates(gcode_path):
 
 MATERIALS = ("pla", "petg", "tpu")
 
+# Mirror of check-gcode.py's envelopes: (nozzle_min, nozzle_max, bed_max).
+MATERIAL_ENV = {"pla": (190, 230, 70), "petg": (220, 260, 90), "tpu": (195, 245, 60)}
+ORCA_LIB = Path("/Applications/OrcaSlicer.app/Contents/Resources/profiles")
+CUSTOM_FILAMENT = OUTPUT / "_filament_custom.json"
+CUSTOM_META = OUTPUT / "_filament_custom.meta.json"
+
+
+def material_class(text):
+    t = (text or "").upper()
+    if "TPU" in t or "FLEX" in t:
+        return "tpu"
+    if "PET" in t:
+        return "petg"
+    if "PLA" in t:
+        return "pla"
+    return None
+
+
+def _find_preset(start, name):
+    """Resolve an inherited preset: same dir, then up to the vendor's
+    filament/ root, then anywhere under it."""
+    for d in (start, *start.parents):
+        cand = d / f"{name}.json"
+        if cand.is_file():
+            return cand
+        if d.name == "filament":
+            hits = list(d.rglob(f"{name}.json"))
+            return hits[0] if hits else None
+    return None
+
+
+def _preset_chain(path, depth=0):
+    d = json.loads(path.read_text())
+    parent_name = d.get("inherits")
+    if depth < 8 and parent_name:
+        parent = _find_preset(path.parent, parent_name)
+        if parent:
+            base = _preset_chain(parent, depth + 1)
+            base.update(d)
+            return base
+    return d
+
+
+def _first(d, key, cast=float):
+    v = d.get(key)
+    if isinstance(v, list):
+        v = v[0] if v else None
+    if v in (None, ""):
+        return None
+    try:
+        return cast(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def lookup_local(query):
+    tokens = [t for t in re.split(r"\W+", query.lower()) if t]
+    if not tokens or not ORCA_LIB.is_dir():
+        return None
+    hits = [f for f in ORCA_LIB.glob("*/filament/**/*.json")
+            if all(t in f.stem.lower() for t in tokens)]
+    if not hits:
+        return None
+    hits.sort(key=lambda f: len(f.stem))   # generic "@base" beats printer variants
+    d = _preset_chain(hits[0])
+    return {
+        "name": hits[0].stem,
+        "source": "OrcaSlicer filament library",
+        "filament_type": str(_first(d, "filament_type", str) or ""),
+        "nozzle": _first(d, "nozzle_temperature"),
+        "nozzle_first": _first(d, "nozzle_temperature_initial_layer"),
+        "bed": _first(d, "hot_plate_temp"),
+        "bed_first": _first(d, "hot_plate_temp_initial_layer"),
+        "fan_min": _first(d, "fan_min_speed"),
+        "fan_max": _first(d, "fan_max_speed"),
+        "volumetric": _first(d, "filament_max_volumetric_speed"),
+        "density": _first(d, "filament_density"),
+        "alternatives": [n for n in dict.fromkeys(f.stem for f in hits[1:6])
+                         if n != hits[0].stem][:3],
+    }
+
+
+LOOKUP_PROMPT = """You are a 3D-printing filament database. For the filament named
+below, reply with ONLY a JSON object (no fences, no prose):
+{"filament_type": "PLA|PETG|TPU|OTHER", "nozzle": <typical nozzle temp C>,
+ "nozzle_first": <first layer nozzle C>, "bed": <bed temp C>,
+ "bed_first": <first layer bed C>, "fan_min": <percent>, "fan_max": <percent>,
+ "volumetric": <max volumetric speed mm3/s for a stock bowden Ender 3 V2>,
+ "density": <g/cm3>, "notes": ["short caveats, if any"]}
+Use the manufacturer's published ranges when you know them; otherwise typical
+values for that material family. filament_type OTHER for anything that is not
+PLA-, PETG- or TPU-family (ABS, ASA, PA, PC...).
+Filament: """
+
+
+def lookup_claude(query):
+    reply = call_claude(LOOKUP_PROMPT + query)
+    m = re.search(r"\{.*\}", reply, re.S)
+    if not m:
+        raise ValueError("lookup returned no JSON: " + reply[:300])
+    d = json.loads(m.group(0))
+    d["name"] = query
+    d["source"] = "Claude lookup (not manufacturer-verified)"
+    d.setdefault("alternatives", [])
+    return d
+
+
+def material_lookup(query):
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("type a filament name to look up")
+    info = lookup_local(query) or lookup_claude(query)
+    cls = material_class(info.get("filament_type")) or material_class(info.get("name"))
+    notes = list(info.get("notes") or [])
+    if not cls:
+        raise ValueError(
+            f"{info.get('name', query)}: {info.get('filament_type') or 'unknown type'} "
+            f"is not printable on this setup (supported families: PLA, PETG, TPU - "
+            f"no enclosure for ABS/ASA, no hardened components for exotics)")
+    if re.search(r"\b(cf|gf|carbon|glass)\b", (info.get("name", "") + " "
+                 + info.get("filament_type", "")).lower()):
+        notes.append("fiber-filled filament wears brass nozzles - fit a hardened "
+                     "nozzle before printing this")
+    n_lo, n_hi, b_max = MATERIAL_ENV[cls]
+    base = json.loads((REPO / f"profiles/ender3v2/filament_{cls}.json").read_text())
+
+    def clamp(v, lo, hi, label):
+        if v is None:
+            return None
+        v = float(v)
+        if v < lo or v > hi:
+            c = max(lo, min(hi, v))
+            notes.append(f"{label} {v:g}C clamped to {c:g}C ({cls.upper()} safety envelope)")
+            return c
+        return v
+
+    nozzle = clamp(info.get("nozzle"), n_lo, n_hi, "nozzle")
+    nozzle_first = clamp(info.get("nozzle_first") or nozzle, n_lo, n_hi, "first-layer nozzle")
+    bed = clamp(info.get("bed"), 0, b_max, "bed")
+    bed_first = clamp(info.get("bed_first") or bed, 0, b_max, "first-layer bed")
+
+    if nozzle:
+        base["nozzle_temperature"] = [str(round(nozzle))]
+    if nozzle_first:
+        base["nozzle_temperature_initial_layer"] = [str(round(nozzle_first))]
+    for key in ("hot_plate_temp", "textured_plate_temp", "cool_plate_temp"):
+        if bed:
+            base[key] = [str(round(bed))]
+        if bed_first:
+            base[key + "_initial_layer"] = [str(round(bed_first))]
+    for key, val in (("fan_min_speed", info.get("fan_min")),
+                     ("fan_max_speed", info.get("fan_max")),
+                     ("filament_density", info.get("density"))):
+        if val is not None:
+            base[key] = [str(val)]
+    vol = info.get("volumetric")
+    cap = float(base.get("filament_max_volumetric_speed", ["12"])[0])
+    if vol is not None:
+        base["filament_max_volumetric_speed"] = [str(min(float(vol), cap))]
+    base["name"] = f"{info['name']} (lookup)"
+
+    OUTPUT.mkdir(exist_ok=True)
+    CUSTOM_FILAMENT.write_text(json.dumps(base, indent=2))
+    def effective(key):
+        v = base.get(key)
+        return round(float(v[0])) if isinstance(v, list) and v else None
+
+    applied = {"nozzle": round(nozzle) if nozzle else effective("nozzle_temperature"),
+               "nozzle_first": round(nozzle_first) if nozzle_first else effective("nozzle_temperature_initial_layer"),
+               "bed": round(bed) if bed else effective("hot_plate_temp"),
+               "bed_first": round(bed_first) if bed_first else effective("hot_plate_temp_initial_layer")}
+    meta = {"name": info["name"], "class": cls, "applied": applied,
+            "source": info["source"]}
+    CUSTOM_META.write_text(json.dumps(meta))
+    meta["notes"] = notes
+    meta["alternatives"] = info.get("alternatives", [])
+    return meta
+
+
+def custom_material_meta():
+    if CUSTOM_META.is_file() and CUSTOM_FILAMENT.is_file():
+        return json.loads(CUSTOM_META.read_text())
+    return None
+
 
 def do_slice(name, settings=None):
     stl = OUTPUT / f"{name}.stl"
@@ -574,7 +758,13 @@ def do_slice(name, settings=None):
         raise FileNotFoundError("generate the STL first")
     settings = settings or {}
     material = str(settings.get("material") or "pla").lower()
-    if material not in MATERIALS:
+    custom = None
+    if material == "custom":
+        custom = custom_material_meta()
+        if not custom:
+            raise ValueError("no looked-up filament stored - use the lookup first")
+        material = custom["class"]
+    elif material not in MATERIALS:
         raise ValueError(f"unknown material {material}")
     copies = max(1, min(25, int(settings.get("copies") or 1)))
     args = [str(REPO / "scripts/test-slice.sh"), str(stl), name]
@@ -583,11 +773,15 @@ def do_slice(name, settings=None):
     if override:
         args.append(str(override[0]))
         changed = override[1]
-    if material != "pla":
+    if custom:
+        changed.append(f"filament: {custom['name']} ({material.upper()} rules)")
+    elif material != "pla":
         changed.append(material.upper())
     if copies > 1:
         changed.append(f"{copies} copies")
     extra_env = {"MATERIAL": material}
+    if custom:
+        extra_env["FILAMENT_OVERRIDE"] = str(CUSTOM_FILAMENT)
     if copies > 1:
         extra_env["REPETITIONS"] = str(copies)
     code, out = run_script(args, extra_env=extra_env)
@@ -724,6 +918,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(p)
         if route == "/api/models":
             return self._send(200, list_models())
+        if route == "/api/material_custom":
+            return self._send(200, custom_material_meta() or {})
         if route == "/api/printer":
             return self._send(200, printer_status())
         if route == "/api/files":
@@ -745,6 +941,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, do_slice(req["model"], req.get("settings")))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
+            if self.path == "/api/material_lookup":
+                return self._send(200, material_lookup(req.get("query")))
             if self.path == "/api/files/delete":
                 return self._send(200, octo_delete(req["name"]))
             if self.path == "/api/revert":

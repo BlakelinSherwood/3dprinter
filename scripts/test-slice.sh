@@ -29,6 +29,9 @@ case "$MATERIAL" in
   tpu)  FILAMENT="$PROF/filament_tpu.json" ;;
   *) echo "unknown MATERIAL '$MATERIAL' (pla|petg|tpu)" >&2; exit 2 ;;
 esac
+# A looked-up filament profile replaces the stock one; MATERIAL still names
+# the family, which selects the check-gcode temperature envelope.
+FILAMENT="${FILAMENT_OVERRIDE:-$FILAMENT}"
 
 # Log to a file so real failure reasons (e.g. "floating regions, enable
 # supports") can be surfaced instead of Orca's bare "run found error".

@@ -165,6 +165,16 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   for tall parts with small footprints). Overrides are merged onto
   `profiles/ender3v2/process.json` at slice time; the profile itself never
   changes. Changing a setting re-locks Upload until the part is re-sliced.
+- **Filament lookup** takes a brand/product name ("Overture Matte PLA",
+  "Polymaker PETG") and applies its suggested temperatures automatically. It
+  searches OrcaSlicer's bundled filament library first (4400+ vendor presets,
+  resolved through their inherits chains); unknown names fall back to a
+  Claude lookup, clearly labelled not-manufacturer-verified. Either way the
+  result is mapped to a PLA/PETG/TPU family, values outside that family's
+  safety envelope are clamped (and say so), fiber-filled filaments get a
+  hardened-nozzle warning, and non-printable families (ABS/ASA...) are
+  refused outright. The applied profile appears as "custom — <name>" in the
+  material picker and survives restarts.
 - **Material** selects PLA, PETG, or TPU 95A (profiles in
   `profiles/ender3v2/`). The safety gate is material-aware: `check-gcode.py
   --material` enforces PLA 190-230/bed 70, PETG 220-260/bed 90, TPU
