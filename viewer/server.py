@@ -479,8 +479,12 @@ def generate(name, params, scale=1.0, rot=None):
     }
 
 
-def run_script(args, timeout=600):
-    p = subprocess.run(args, cwd=REPO, capture_output=True, text=True, timeout=timeout)
+def run_script(args, timeout=600, extra_env=None):
+    env = dict(os.environ)
+    if extra_env:
+        env.update(extra_env)
+    p = subprocess.run(args, cwd=REPO, capture_output=True, text=True,
+                       timeout=timeout, env=env)
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
@@ -561,17 +565,36 @@ def gcode_estimates(gcode_path):
     return est
 
 
+MATERIALS = ("pla", "petg", "tpu")
+
+
 def do_slice(name, settings=None):
     stl = OUTPUT / f"{name}.stl"
     if not stl.is_file():
         raise FileNotFoundError("generate the STL first")
+    settings = settings or {}
+    material = str(settings.get("material") or "pla").lower()
+    if material not in MATERIALS:
+        raise ValueError(f"unknown material {material}")
+    copies = max(1, min(25, int(settings.get("copies") or 1)))
     args = [str(REPO / "scripts/test-slice.sh"), str(stl), name]
     override = build_process_override(settings)
     changed = []
     if override:
         args.append(str(override[0]))
         changed = override[1]
-    code, out = run_script(args)
+    if material != "pla":
+        changed.append(material.upper())
+    if copies > 1:
+        changed.append(f"{copies} copies")
+    extra_env = {"MATERIAL": material}
+    if copies > 1:
+        extra_env["REPETITIONS"] = str(copies)
+    code, out = run_script(args, extra_env=extra_env)
+    if code == 0:
+        # The upload re-check must verify against the envelope this file was
+        # sliced for, not assume PLA.
+        (OUTPUT / f"{name}.material").write_text(material)
     result = {"ok": code == 0, "report": out, "overrides": changed,
               "gcode": f"output/{name}.gcode" if code == 0 else None}
     if code == 0:
@@ -584,8 +607,14 @@ def do_upload(name):
     if not gcode.is_file():
         raise FileNotFoundError("slice first")
     # Independent re-check so a stale or unsafe file can never be uploaded,
-    # even if the UI is out of sync with what's on disk.
-    code, out = run_script([sys.executable, str(REPO / "scripts/check-gcode.py"), str(gcode)])
+    # even if the UI is out of sync with what's on disk. The material marker
+    # written at slice time selects the temperature envelope.
+    marker = OUTPUT / f"{name}.material"
+    material = marker.read_text().strip() if marker.is_file() else "pla"
+    if material not in MATERIALS:
+        material = "pla"
+    code, out = run_script([sys.executable, str(REPO / "scripts/check-gcode.py"),
+                            "--material", material, str(gcode)])
     if code != 0:
         return {"ok": False, "report": "REFUSED - safety check failed:\n" + out}
     code, out = run_script([str(REPO / "scripts/octoprint-upload.sh"), str(gcode)])

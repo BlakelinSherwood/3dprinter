@@ -152,6 +152,8 @@ function printSettings() {
     infill_pct: parseInt($('ps_infill').value) || 15,
     supports: $('ps_supports').checked,
     brim: $('ps_brim').checked,
+    material: $('ps_material').value,
+    copies: parseInt($('ps_copies').value) || 1,
   };
 }
 try {
@@ -161,9 +163,11 @@ try {
     $('ps_infill').value = ps.infill_pct ?? 15;
     $('ps_supports').checked = !!ps.supports;
     $('ps_brim').checked = !!ps.brim;
+    $('ps_material').value = ps.material ?? 'pla';
+    $('ps_copies').value = ps.copies ?? 1;
   }
 } catch {}
-for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim']) {
+for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies']) {
   $(id).onchange = () => {
     try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
     // settings changed: the previous slice no longer reflects them
@@ -185,6 +189,8 @@ $('units').onclick = () => {
     infill_pct: parseInt($('ps_infill').value) || 15,
     supports: $('ps_supports').checked,
     brim: $('ps_brim').checked,
+    material: $('ps_material').value,
+    copies: parseInt($('ps_copies').value) || 1,
   };
 }
 try {
@@ -194,9 +200,11 @@ try {
     $('ps_infill').value = ps.infill_pct ?? 15;
     $('ps_supports').checked = !!ps.supports;
     $('ps_brim').checked = !!ps.brim;
+    $('ps_material').value = ps.material ?? 'pla';
+    $('ps_copies').value = ps.copies ?? 1;
   }
 } catch {}
-for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim']) {
+for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies']) {
   $(id).onchange = () => {
     try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
     // settings changed: the previous slice no longer reflects them

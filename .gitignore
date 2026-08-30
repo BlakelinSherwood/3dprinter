@@ -12,3 +12,4 @@ __pycache__/
 models/.history/
 uploads/
 models/imports/
+*.material

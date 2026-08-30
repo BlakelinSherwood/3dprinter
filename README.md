@@ -165,6 +165,16 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   for tall parts with small footprints). Overrides are merged onto
   `profiles/ender3v2/process.json` at slice time; the profile itself never
   changes. Changing a setting re-locks Upload until the part is re-sliced.
+- **Material** selects PLA, PETG, or TPU 95A (profiles in
+  `profiles/ender3v2/`). The safety gate is material-aware: `check-gcode.py
+  --material` enforces PLA 190-230/bed 70, PETG 220-260/bed 90, TPU
+  195-245/bed 60, and the slice writes an `output/<name>.material` marker so
+  the upload re-check verifies against the same envelope the file was sliced
+  for. **copies** slices N arranged duplicates (Orca `--clone-objects`;
+  its `--repetitions` rejects raw-STL slice-all runs).
+- `models/first_layer_test.py` (five thin pads across the bed) and
+  `models/fit_test.py` (5mm peg + holes at +0.1..+0.5 clearance) are bundled
+  calibration prints for bed levelling and fit tuning.
 - **Slice + check** runs the normal `test-slice.sh` path; the safety report is
   shown verbatim, and **Upload stays disabled unless the check passes**. After
   a successful slice the panel shows the estimated print time and filament

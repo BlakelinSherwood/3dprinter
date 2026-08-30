@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Sanity-check sliced G-code before it is allowed anywhere near the printer.
 
-Enforces the pipeline's safety rules for PLA on an Ender 3 V2:
-  * hotend target 190-230 C
-  * bed target <= 70 C
+Enforces the pipeline's safety rules on an Ender 3 V2:
+  * hotend and bed targets inside the selected material's envelope
   * all motion inside the 220 x 220 x 250 mm build volume
 
+Material envelopes (--material, default pla):
+    pla   nozzle 190-230  bed <=70
+    petg  nozzle 220-260  bed <=90
+    tpu   nozzle 195-245  bed <=60
+
 Exits 0 if every check passes, 1 otherwise. Usage:
-    scripts/check-gcode.py output/part.gcode
+    scripts/check-gcode.py [--material petg] output/part.gcode
 """
 import argparse
 import re
@@ -18,6 +22,13 @@ import sys
 HOTEND_RE = re.compile(r"^M10[49]\b[^;\n]*?\sS(\d+(?:\.\d+)?)", re.M)
 BED_RE = re.compile(r"^M1[49]0\b[^;\n]*?\sS(\d+(?:\.\d+)?)", re.M)
 AXIS_RE = {ax: re.compile(rf"\b{ax}(-?\d+(?:\.\d+)?)") for ax in "XYZ"}
+
+# (nozzle_min, nozzle_max, bed_max) per material.
+MATERIALS = {
+    "pla": (190.0, 230.0, 70.0),
+    "petg": (220.0, 260.0, 90.0),
+    "tpu": (195.0, 245.0, 60.0),
+}
 
 
 def motion_extents(lines):
@@ -41,13 +52,21 @@ def motion_extents(lines):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("gcode")
-    ap.add_argument("--nozzle-min", type=float, default=190.0)
-    ap.add_argument("--nozzle-max", type=float, default=230.0)
-    ap.add_argument("--bed-max", type=float, default=70.0)
+    ap.add_argument("--material", choices=sorted(MATERIALS), default="pla")
+    ap.add_argument("--nozzle-min", type=float, default=None)
+    ap.add_argument("--nozzle-max", type=float, default=None)
+    ap.add_argument("--bed-max", type=float, default=None)
     ap.add_argument("--max-x", type=float, default=220.0)
     ap.add_argument("--max-y", type=float, default=220.0)
     ap.add_argument("--max-z", type=float, default=250.0)
     a = ap.parse_args()
+    mat = MATERIALS[a.material]
+    if a.nozzle_min is None:
+        a.nozzle_min = mat[0]
+    if a.nozzle_max is None:
+        a.nozzle_max = mat[1]
+    if a.bed_max is None:
+        a.bed_max = mat[2]
 
     src = open(a.gcode, errors="replace").read()
     lines = src.splitlines()
@@ -80,7 +99,7 @@ def main():
                 f"{ax} travel {min(vals):.2f}..{max(vals):.2f} outside {lo}..{hi}mm"
             )
 
-    print(f"checked: {a.gcode} ({len(lines)} lines)")
+    print(f"checked: {a.gcode} ({len(lines)} lines, material {a.material})")
     print(f"  hotend: {sorted(set(active_hotend)) or 'none'} C")
     print(f"  bed:    {sorted({t for t in bed if t > 0}) or 'none'} C")
     for ax in "XYZ":
@@ -93,7 +112,7 @@ def main():
         for f in failures:
             print(f"  - {f}", file=sys.stderr)
         return 1
-    print("\nPASS: temperatures and geometry within Ender 3 V2 / PLA limits")
+    print(f"\nPASS: temperatures and geometry within Ender 3 V2 / {a.material.upper()} limits")
     return 0
 
 

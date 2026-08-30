@@ -176,6 +176,18 @@
         </div>
         <label class="check"><input type="checkbox" id="ps_supports"> tree supports</label>
         <label class="check"><input type="checkbox" id="ps_brim"> brim</label>
+        <div class="field">
+          <label for="ps_material">material</label>
+          <select id="ps_material">
+            <option value="pla" selected>PLA</option>
+            <option value="petg">PETG</option>
+            <option value="tpu">TPU 95A</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="ps_copies">copies</label>
+          <input type="number" id="ps_copies" value="1" min="1" max="25" step="1">
+        </div>
       </div>
       <div class="row">
         <button id="slice" disabled>Slice + check</button>
