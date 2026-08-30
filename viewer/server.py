@@ -124,7 +124,8 @@ def call_claude(prompt, allow_read=False, model="sonnet"):
         cmd += ["--allowedTools", "Read"]
     p = subprocess.run(
         cmd,
-        cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=420,
+        cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+        timeout=900,   # opus writing a highly detailed part can run 5-10 min
     )
     if p.returncode != 0:
         out = (p.stderr or "") + (p.stdout or "")
@@ -337,8 +338,15 @@ def describe(mode, name, description, image=None, focus=None):
     with _codegen_lock:
         last_err = None
         for attempt in (1, 2):
-            reply = call_claude(prompt, allow_read=image_path is not None,
-                                model="opus")
+            try:
+                reply = call_claude(prompt, allow_read=image_path is not None,
+                                    model="opus")
+            except subprocess.TimeoutExpired:
+                raise RuntimeError(
+                    "generation ran past the 15-minute limit. Very high detail "
+                    "requests can do this - try describing the shape more "
+                    "specifically, or build a simpler base and add detail with "
+                    "focused edits.")
             code = extract_code(reply)
             if mode == "edit":
                 out_name = name
