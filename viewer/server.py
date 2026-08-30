@@ -241,10 +241,9 @@ def norm_rot(rot):
     return rot if any(rot) else None
 
 
-def generate_import(name, scale, scale_label, rot=None):
-    import numpy as np
-    tris = read_stl(IMPORTS / f"{name}.stl")
-    warnings = [f"imported mesh - scale and slice only, no parameters"]
+def finish_mesh_tris(tris, name, scale, scale_label, rot, warnings):
+    """Rotate/scale/bed-drop a triangle soup, write it, and report like a
+    parametric generate() would."""
     if rot:
         tris = tris @ rotation_matrix(rot).T
         warnings.append(f"rotated {'/'.join(f'{a:g}' for a in rot)} deg")
@@ -277,6 +276,13 @@ def generate_import(name, scale, scale_label, rot=None):
     }
 
 
+def generate_import(name, scale, scale_label, rot=None):
+    tris = read_stl(IMPORTS / f"{name}.stl")
+    return finish_mesh_tris(
+        tris, name, scale, scale_label, rot,
+        ["imported mesh - scale and slice only, no parameters"])
+
+
 def save_reference_image(image):
     """Persist an uploaded reference photo for the codegen CLI to Read."""
     data = base64.b64decode(image["data"])
@@ -292,24 +298,60 @@ def save_reference_image(image):
     return path
 
 
+MESH_MOD_CONTRACT = """You modify existing 3D mesh files (downloaded STLs) with
+python. Write a single-file model script with this exact structure:
+
+- First line: `# model: <base>_mod` (keep the _mod suffix).
+- Module docstring, first line <=70 chars describing the modification.
+- Imports: `import cadquery as cq` and `from _meshlib import load_import,
+  cq_solid, difference, union, intersection` (only what you use).
+- `def build(...)` with 1-6 NUMERIC keyword parameters in millimetres,
+  returning a trimesh mesh:
+    * start from `m = load_import("<base>")` - the unmodified downloaded mesh
+    * build tool solids with CadQuery (`cq_solid(cq.Workplane("XY")...)`)
+    * combine with difference/union/intersection (manifold engine, watertight)
+- End with:
+
+if __name__ == "__main__":
+    import sys
+    out = sys.argv[1] if len(sys.argv) > 1 else "part.stl"
+    build().export(out)
+
+- The mesh's own coordinates are what the user sees; probe nothing, trust the
+  stated coordinates. Keep tools generously sized (extend cuts 1mm past
+  surfaces) so booleans are robust.
+"""
+
+
 def describe(mode, name, description, image=None, focus=None):
     """Natural-language build/edit. Writes models/<name>.py after validating
     that the generated file actually loads and builds."""
     rules = design_rules()
     image_path = save_reference_image(image) if image else None
+    mesh_base = None
     if mode == "edit":
         path = MODELS / f"{name}.py"
         if not path.is_file():
             if (IMPORTS / f"{name}.stl").is_file():
-                raise ValueError(
-                    "imported meshes have no editable source - use scale, or "
-                    "describe a new part instead")
-            raise FileNotFoundError(f"no such model: {name}")
-        original = path.read_text()
-        task = (f"Modify this existing model per the request below. Keep the same "
-                f"`# model:` name and overall structure; change only what the "
-                f"request implies.\n\nRequest: {description}\n\n"
-                f"Current file:\n{original}")
+                mesh_base = name
+            else:
+                raise FileNotFoundError(f"no such model: {name}")
+        if mesh_base:
+            original = None
+            import numpy as np
+            tris = read_stl(IMPORTS / f"{name}.stl")
+            lo = tris.reshape(-1, 3).min(axis=0)
+            hi = tris.reshape(-1, 3).max(axis=0)
+            task = (f"Modify the downloaded mesh '{name}' per this request: "
+                    f"{description}\n\nThe mesh's bounding box runs from "
+                    f"({lo[0]:.1f}, {lo[1]:.1f}, {lo[2]:.1f}) to "
+                    f"({hi[0]:.1f}, {hi[1]:.1f}, {hi[2]:.1f}) mm.")
+        else:
+            original = path.read_text()
+            task = (f"Modify this existing model per the request below. Keep the same "
+                    f"`# model:` name and overall structure; change only what the "
+                    f"request implies.\n\nRequest: {description}\n\n"
+                    f"Current file:\n{original}")
     else:
         original = None
         task = f"Write a new model for this request: {description}"
@@ -332,7 +374,10 @@ def describe(mode, name, description, image=None, focus=None):
     task += ("\n\nIf the request gives dimensions in inches or fractions "
              "(1/4\", 2in), convert to millimetres (25.4 mm per inch) - the "
              "code and all parameters stay in mm.")
-    prompt = (MODEL_CONTRACT + "\n# Printer design rules (mandatory)\n" + rules
+    contract = MODEL_CONTRACT
+    if mesh_base:
+        contract = MESH_MOD_CONTRACT.replace("<base>", mesh_base)
+    prompt = (contract + "\n# Printer design rules (mandatory)\n" + rules
               + "\n# Task\n" + task + OUTPUT_RULE)
 
     with _codegen_lock:
@@ -349,7 +394,7 @@ def describe(mode, name, description, image=None, focus=None):
                     "focused edits.")
             code = extract_code(reply)
             if mode == "edit":
-                out_name = name
+                out_name = f"{name}_mod" if mesh_base else name
             else:
                 m = re.match(r"#\s*model:\s*([a-zA-Z0-9_]+)", code)
                 out_name = (m.group(1).lower() if m else slugify(description))[:40]
@@ -408,6 +453,8 @@ def list_models():
         items.append({"name": f.stem, "summary": "imported mesh",
                       "params": [], "imported": True})
     for f in sorted(MODELS.glob("*.py")):
+        if f.stem.startswith("_"):
+            continue
         try:
             mod = load_model(f)
             doc = (mod.__doc__ or "").strip().splitlines()
@@ -459,7 +506,12 @@ def generate(name, params, scale=1.0, rot=None):
         raise ValueError(f"scale {scale_label} ({scale:g}) outside 0.001-100")
     warnings = []
     with _generate_lock:
-        shape = as_shape(mod.build(**kwargs))
+        built = mod.build(**kwargs)
+        if type(built).__module__.split(".")[0] == "trimesh":
+            import numpy as np
+            tris = np.asarray(built.triangles, dtype=float)
+            return finish_mesh_tris(tris, name, scale, scale_label, rot, [])
+        shape = as_shape(built)
         if rot:
             axes = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
             for axis, ang in zip(axes, rot):
@@ -846,6 +898,115 @@ def do_upload(name):
     return {"ok": code == 0, "report": out}
 
 
+# ---------------------- public model search (Printables) ----------------------
+PRINTABLES_API = "https://api.printables.com/graphql/"
+PRINTABLES_UA = "PartStudio/1.0 (personal 3D printing tool)"
+
+
+def printables_gql(query, variables):
+    req = urllib.request.Request(
+        PRINTABLES_API,
+        data=json.dumps({"query": query, "variables": variables}).encode(),
+        headers={"Content-Type": "application/json", "User-Agent": PRINTABLES_UA})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        out = json.load(r)
+    if out.get("errors"):
+        raise RuntimeError("Printables API: " + json.dumps(out["errors"])[:300])
+    return out["data"]
+
+
+def search_models(query):
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("type something to search for")
+    data = printables_gql(
+        """query S($q: String!) { searchPrints2(query: $q, limit: 24) { items {
+             id name slug image { filePath } user { publicUsername }
+             license { name } likesCount downloadCount } } }""",
+        {"q": query})
+    items = []
+    for it in data["searchPrints2"]["items"]:
+        items.append({
+            "id": it["id"],
+            "name": it["name"],
+            "url": f"https://www.printables.com/model/{it['id']}-{it['slug']}",
+            "image": ("https://media.printables.com/" + it["image"]["filePath"])
+                     if it.get("image") else None,
+            "author": (it.get("user") or {}).get("publicUsername"),
+            "license": (it.get("license") or {}).get("name"),
+            "likes": it.get("likesCount"),
+            "downloads": it.get("downloadCount"),
+            "source": "Printables",
+        })
+    return items
+
+
+def model_files(print_id):
+    data = printables_gql(
+        """query P($id: ID!) { print(id: $id) { id name
+             user { publicUsername } license { name }
+             stls { id name fileSize } } }""",
+        {"id": str(print_id)})
+    p = data["print"]
+    files = [f for f in p["stls"] if f["name"].lower().endswith(".stl")]
+    return {"id": p["id"], "name": p["name"],
+            "author": (p.get("user") or {}).get("publicUsername"),
+            "license": (p.get("license") or {}).get("name"),
+            "files": files}
+
+
+def http_download(url, cap=60 * 1024 * 1024):
+    req = urllib.request.Request(url, headers={"User-Agent": PRINTABLES_UA})
+    with urllib.request.urlopen(req, timeout=120) as r:
+        data = r.read(cap + 1)
+    if len(data) > cap:
+        raise ValueError("file larger than the 60MB import cap")
+    return data
+
+
+def import_remote(print_id, file_id):
+    info = model_files(print_id)
+    f = next((x for x in info["files"] if str(x["id"]) == str(file_id)), None)
+    if not f:
+        raise ValueError("that file is not part of this model")
+    data = printables_gql(
+        """mutation D($id: ID!, $printId: ID!, $fileType: DownloadFileTypeEnum!,
+                      $source: DownloadSourceEnum!) {
+             getDownloadLink(id: $id, printId: $printId, fileType: $fileType,
+                             source: $source) { ok output { link } } }""",
+        {"id": str(file_id), "printId": str(print_id),
+         "fileType": "stl", "source": "model_detail"})
+    link = data["getDownloadLink"]["output"]["link"]
+    raw = http_download(link)
+    stem = save_import(f["name"], base64.b64encode(raw).decode())
+    attribution = {
+        "title": info["name"], "file": f["name"], "author": info["author"],
+        "license": info["license"], "source": "Printables",
+        "url": f"https://www.printables.com/model/{print_id}",
+    }
+    (IMPORTS / f"{stem}.json").write_text(json.dumps(attribution, indent=2))
+    return {"model": stem, "attribution": attribution}
+
+
+def import_url(url):
+    url = (url or "").strip()
+    m = re.match(r"https?://(?:www\.)?printables\.com/model/(\d+)", url)
+    if m:
+        info = model_files(m.group(1))
+        if len(info["files"]) == 1:
+            return import_remote(info["id"], info["files"][0]["id"])
+        return {"choose": info}     # several files - let the user pick
+    if re.match(r"https?://\S+\.stl(\?\S*)?$", url, re.I):
+        raw = http_download(url)
+        stem = save_import(url.split("?")[0].rsplit("/", 1)[-1],
+                           base64.b64encode(raw).decode())
+        (IMPORTS / f"{stem}.json").write_text(json.dumps(
+            {"title": stem, "source": "direct URL", "url": url}, indent=2))
+        return {"model": stem, "attribution": {"title": stem, "url": url}}
+    raise ValueError("paste a printables.com model URL or a direct link to an "
+                     ".stl file")
+
+
 OCTO_URL = "http://127.0.0.1:5001"
 
 
@@ -972,6 +1133,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, do_slice(req["model"], req.get("settings")))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
+            if self.path == "/api/search":
+                return self._send(200, search_models(req.get("query")))
+            if self.path == "/api/model_files":
+                return self._send(200, model_files(req["id"]))
+            if self.path == "/api/model_import":
+                return self._send(200, import_remote(req["id"], req["file_id"]))
+            if self.path == "/api/import_url":
+                return self._send(200, import_url(req.get("url")))
             if self.path == "/api/material_lookup":
                 return self._send(200, material_lookup(req.get("query")))
             if self.path == "/api/files/delete":

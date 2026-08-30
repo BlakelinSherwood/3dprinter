@@ -145,6 +145,13 @@ leaving the browser.
 scripts/studio.sh          # serves http://127.0.0.1:8434
 ```
 
+- **&#128270; find** opens the model finder: search Printables (largest open
+  model library; anonymous API) with thumbnails, author, license and download
+  counts; expand a result to pick an STL and import it straight into the
+  pipeline. Imports record attribution (title, author, license, source URL)
+  in `models/imports/<name>.json` and it is shown in the log on import. A
+  paste-a-URL row accepts printables.com model links and direct .stl URLs
+  for anything found elsewhere.
 - **Describe it** builds a brand-new model from a sentence ("Build new") or
   rewrites the selected one ("Edit selected"). Generation shells out to the
   `claude` CLI headlessly with `viewer/design_rules.md` — the Ender 3 V2 / PLA

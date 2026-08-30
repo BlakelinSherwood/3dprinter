@@ -534,6 +534,121 @@ $('importfile').onchange = () => {
   rd.readAsDataURL(f);
 };
 
+// ---------------------------- model finder ----------------------------
+$('findbtn').onclick = () => { $('finder').hidden = false; $('fq').focus(); };
+$('finderclose').onclick = () => { $('finder').hidden = true; };
+
+async function finderImport(printId, fileId, btn) {
+  if (btn) { btn.disabled = true; btn.textContent = 'importing…'; }
+  try {
+    const res = await api('/api/model_import', { id: printId, file_id: fileId });
+    await afterFinderImport(res);
+  } catch (e) {
+    log(e.message, 'bad');
+    if (btn) { btn.disabled = false; btn.textContent = 'import'; }
+  }
+}
+
+async function afterFinderImport(res) {
+  $('finder').hidden = true;
+  const a = res.attribution || {};
+  log(`imported "${a.title || res.model}"` +
+      (a.author ? ` by ${a.author}` : '') +
+      (a.license ? ` · ${a.license}` : ''), 'ok');
+  if (a.url) log(`source: ${a.url}`, 'dim');
+  $('scale').value = 1;
+  await refreshModels(res.model);
+  await doGenerate();
+}
+
+function renderResults(items) {
+  const box = $('fresults');
+  box.innerHTML = '';
+  if (!items.length) {
+    box.innerHTML = '<div class="fsub" style="padding:10px 0">no results</div>';
+    return;
+  }
+  for (const it of items) {
+    const card = document.createElement('div');
+    card.className = 'fcard';
+    const img = document.createElement('img');
+    if (it.image) img.src = it.image;
+    img.loading = 'lazy'; img.alt = '';
+    const meta = document.createElement('div');
+    meta.className = 'fmeta';
+    const nm = document.createElement('div');
+    nm.className = 'fname'; nm.textContent = it.name; nm.title = it.name;
+    const sub = document.createElement('div');
+    sub.className = 'fsub';
+    sub.textContent = `${it.author || '?'} · ${it.license || 'license unknown'}` +
+      (it.downloads ? ` · ${it.downloads.toLocaleString()} downloads` : '');
+    meta.append(nm, sub);
+    card.append(img, meta);
+    let open = false, filesBox = null;
+    card.onclick = async () => {
+      if (open) { filesBox?.remove(); open = false; return; }
+      open = true;
+      filesBox = document.createElement('div');
+      filesBox.className = 'ffiles';
+      filesBox.innerHTML = '<div class="frow"><span class="qname">loading files…</span></div>';
+      card.after(filesBox);
+      try {
+        const info = await api('/api/model_files', { id: it.id });
+        filesBox.innerHTML = '';
+        if (!info.files.length) {
+          filesBox.innerHTML = '<div class="frow"><span class="qname">no STL files in this model</span></div>';
+        }
+        for (const f of info.files) {
+          const row = document.createElement('div');
+          row.className = 'frow';
+          const n = document.createElement('span');
+          n.className = 'qname'; n.textContent = f.name; n.title = f.name;
+          const sz = document.createElement('span');
+          sz.className = 'fsub'; sz.textContent = fmtSize(f.fileSize);
+          const go = document.createElement('button');
+          go.textContent = 'import';
+          go.onclick = (ev) => { ev.stopPropagation(); finderImport(it.id, f.id, go); };
+          row.append(n, sz, go);
+          filesBox.appendChild(row);
+        }
+      } catch (e) {
+        filesBox.innerHTML = `<div class="frow"><span class="qname">${e.message}</span></div>`;
+      }
+    };
+    box.appendChild(card);
+  }
+}
+
+async function doSearch() {
+  const query = $('fq').value.trim();
+  if (!query) return;
+  $('fgo').disabled = true;
+  $('fresults').innerHTML = '<div class="fsub" style="padding:10px 0">searching…</div>';
+  try { renderResults(await api('/api/search', { query })); }
+  catch (e) { $('fresults').innerHTML = `<div class="fsub" style="padding:10px 0">${e.message}</div>`; }
+  $('fgo').disabled = false;
+}
+$('fgo').onclick = doSearch;
+$('fq').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
+
+$('furlgo').onclick = async () => {
+  const url = $('furl').value.trim();
+  if (!url) return;
+  $('furlgo').disabled = true; $('furlgo').textContent = '…';
+  try {
+    const res = await api('/api/import_url', { url });
+    if (res.choose) {
+      renderResults([{ id: res.choose.id, name: res.choose.name,
+        author: res.choose.author, license: res.choose.license, image: null }]);
+      log('several files in that model - pick one from the list', 'dim');
+    } else {
+      $('furl').value = '';
+      await afterFinderImport(res);
+    }
+  } catch (e) { log(e.message, 'bad'); }
+  $('furlgo').disabled = false; $('furlgo').textContent = 'Import';
+};
+
 async function doDescribe(mode) {
   const description = $('desc').value.trim();
   if (!description) { log('describe the part first', 'bad'); return; }
