@@ -92,19 +92,34 @@ if __name__ == "__main__":
 - No file I/O outside that runner, no network, no prints during build().
 - Model the part already oriented for printing per the design rules below,
   bottom face on the z=0 plane.
-- Prefer simple robust CadQuery: boxes, cylinders, extrudes, cuts, unions,
-  fillet/chamfer with conservative radii. Selectors can be brittle - when
-  filleting, select edges precisely (e.g. "|Z", ">Z") and keep radii small
-  relative to the faces they touch, or skip the fillet.
+- Prefer robust CadQuery, but do not stop at primitives: use revolve, sweep,
+  loft, shell, and polar/linear patterns (pushPoints, polarArray) when they
+  fit the part. Selectors can be brittle - when filleting, select edges
+  precisely (e.g. "|Z", ">Z") and keep radii small relative to the faces they
+  touch, or skip the fillet.
+
+# Design quality (mandatory)
+- Aim for the detail of a well-designed store-bought product, not a minimal
+  primitive. A plain disc or box is only acceptable if the user asks for
+  minimal/plain.
+- Include the functional micro-detail a good industrial designer would add:
+  chamfered or filleted openings, grip ribs or knurl-like patterns where a
+  hand touches, drainage/relief where liquid could pool, recessed bottoms so
+  large faces do not sit dead flat, gentle crowns or steps instead of large
+  featureless planes.
+- Decorative patterns (radial grooves, concentric rings, hex or slot grids)
+  are welcome where they suit the object - sized to print: >= 0.8mm wide,
+  >= 0.6mm deep/tall features only.
+- Expose 4-8 meaningful parameters.
 """
 
 OUTPUT_RULE = ("\nReply with ONLY the complete Python source file. "
                "No markdown fences, no commentary before or after.")
 
 
-def call_claude(prompt, allow_read=False):
+def call_claude(prompt, allow_read=False, model="sonnet"):
     scratch = tempfile.mkdtemp(prefix="studio-codegen-")
-    cmd = [find_claude(), "-p", prompt, "--model", "sonnet", "--output-format", "text"]
+    cmd = [find_claude(), "-p", prompt, "--model", model, "--output-format", "text"]
     if allow_read:   # let the CLI view an uploaded reference image
         cmd += ["--allowedTools", "Read"]
     p = subprocess.run(
@@ -276,7 +291,7 @@ def save_reference_image(image):
     return path
 
 
-def describe(mode, name, description, image=None):
+def describe(mode, name, description, image=None, focus=None):
     """Natural-language build/edit. Writes models/<name>.py after validating
     that the generated file actually loads and builds."""
     rules = design_rules()
@@ -298,6 +313,13 @@ def describe(mode, name, description, image=None):
         original = None
         task = f"Write a new model for this request: {description}"
 
+    if mode == "edit" and focus and focus.get("point"):
+        x, y, z = (round(float(v), 2) for v in focus["point"])
+        region = focus.get("region") or "that spot"
+        task += (f"\n\nThe user clicked a specific spot on the current model: "
+                 f"({x}, {y}, {z}) mm in the model's own coordinates - {region}. "
+                 f"Apply the requested change to the feature at or nearest this "
+                 f"spot, and leave the rest of the geometry unchanged.")
     if image_path:
         task += (f"\n\nReference photo: the user uploaded an image at "
                  f"{image_path}. Use the Read tool to view it FIRST. Design a "
@@ -315,7 +337,8 @@ def describe(mode, name, description, image=None):
     with _codegen_lock:
         last_err = None
         for attempt in (1, 2):
-            reply = call_claude(prompt, allow_read=image_path is not None)
+            reply = call_claude(prompt, allow_read=image_path is not None,
+                                model="opus")
             code = extract_code(reply)
             if mode == "edit":
                 out_name = name
@@ -953,7 +976,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/describe":
                 return self._send(200, describe(
                     req.get("mode", "new"), req.get("model"), req["description"],
-                    req.get("image")))
+                    req.get("image"), req.get("focus")))
             return self._send(404, {"error": "not found"})
         except Exception:
             return self._send(500, {"error": traceback.format_exc()})

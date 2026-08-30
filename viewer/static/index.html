@@ -42,6 +42,10 @@
   textarea:focus { outline: 1px solid var(--accent); }
   .warn { color: #ffb224; }
   .hint { color: var(--dim); font-size: 11px; margin-top: 6px; }
+  #focusrow { align-items: center; margin-top: 8px; gap: 7px; }
+  #focusdot { color: #ffb224; flex: 0 0 auto; }
+  #focustext { flex: 1; color: var(--dim); font-size: 11.5px; }
+  #focusrow button { flex: 0 0 24px; padding: 2px 0; }
   #prog { margin-top: 10px; }
   #progtrack { height: 5px; background: var(--edge); border-radius: 3px;
     overflow: hidden; }
@@ -145,6 +149,11 @@
       <div class="row">
         <button id="buildnew" class="primary">Build new</button>
         <button id="editsel">Edit selected</button>
+      </div>
+      <div class="row" id="focusrow" hidden>
+        <span id="focusdot">&#9678;</span>
+        <span id="focustext"></span>
+        <button id="focusclear" title="Clear the selected spot">&times;</button>
       </div>
       <div class="hint">Enter builds new &middot; &#8984;Enter edits selected &middot; Shift+Enter for a new line</div>
       <div id="prog" hidden>

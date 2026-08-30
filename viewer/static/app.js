@@ -88,6 +88,7 @@ function showSTL(url) {
     const c = new THREE.Vector3(); bb.getCenter(c);
     // Sit on the plate, centered: xy center -> origin, zmin -> 0.
     geom.translate(-c.x, -c.y, -bb.min.z);
+    meshOffset = { x: c.x, y: c.y, z: bb.min.z };
     mesh = new THREE.Mesh(geom, material);
     scene.add(mesh);
     const size = Math.max(bb.max.x - bb.min.x, bb.max.y - bb.min.y, bb.max.z - bb.min.z);
@@ -100,6 +101,88 @@ function showSTL(url) {
 // ---------------------------- pipeline controls ----------------------------
 let models = [];
 const state = { generated: false, sliced: false };
+let meshOffset = { x: 0, y: 0, z: 0 };
+
+// ------------------- click a spot on the model to focus edits -------------------
+let focus = null;        // {point:[x,y,z] model mm, region: "words"}
+let focusMarker = null;
+
+function clearFocus() {
+  focus = null;
+  if (focusMarker) { scene.remove(focusMarker); focusMarker = null; }
+  $('focusrow').hidden = true;
+}
+
+function regionWords(p) {   // p is in display coords (centered, z from 0)
+  if (!lastResult) return '';
+  const [X, Y, Z] = lastResult.bbox;
+  const parts = [];
+  if (p.z > Z * 0.8) parts.push('on the top');
+  else if (p.z < Z * 0.2) parts.push('near the bottom');
+  else parts.push('on the side');
+  if (p.x > X * 0.25) parts.push('right (+X) area');
+  else if (p.x < -X * 0.25) parts.push('left (-X) area');
+  if (p.y > Y * 0.25) parts.push('back (+Y) area');
+  else if (p.y < -Y * 0.25) parts.push('front (-Y) area');
+  return parts.join(', ');
+}
+
+function setFocusFromHit(hit) {
+  clearFocus();
+  const p = hit.point;
+  const model = [
+    +(p.x + meshOffset.x).toFixed(2),
+    +(p.y + meshOffset.y).toFixed(2),
+    +(p.z + meshOffset.z).toFixed(2),
+  ];
+  const region = regionWords(p);
+  focus = { point: model, region };
+  const size = lastResult ? Math.max(...lastResult.bbox) : 40;
+  focusMarker = new THREE.Mesh(
+    new THREE.SphereGeometry(Math.max(size * 0.022, 0.8), 20, 14),
+    new THREE.MeshBasicMaterial({ color: 0xffb224 }));
+  focusMarker.position.copy(p);
+  scene.add(focusMarker);
+  $('focustext').textContent =
+    `${region || 'spot'} (${model.join(', ')}) — edits target this`;
+  $('focusrow').hidden = false;
+}
+
+function focusAtScreen(cssX, cssY) {
+  if (!mesh) return 'no mesh';
+  const rc = new THREE.Raycaster();
+  const r = renderer.domElement.getBoundingClientRect();
+  rc.setFromCamera(new THREE.Vector2(
+    ((cssX - r.left) / r.width) * 2 - 1,
+    -((cssY - r.top) / r.height) * 2 + 1), camera);
+  const hits = rc.intersectObject(mesh);
+  if (hits.length) { setFocusFromHit(hits[0]); return 'hit'; }
+  clearFocus(); return 'miss';
+}
+window.studioFocusAt = focusAtScreen;   // synthetic pointer events don't carry
+                                        // real pointer state in embedded panes
+
+{
+  const ray = new THREE.Raycaster();
+  let downAt = null;
+  renderer.domElement.addEventListener('pointerdown', (e) => {
+    downAt = [e.clientX, e.clientY];
+  });
+  renderer.domElement.addEventListener('pointerup', (e) => {
+    if (!downAt) return;
+    const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
+    downAt = null;
+    if (moved > 6 || !mesh) return;      // it was an orbit drag, not a click
+    const r = renderer.domElement.getBoundingClientRect();
+    ray.setFromCamera(new THREE.Vector2(
+      ((e.clientX - r.left) / r.width) * 2 - 1,
+      -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+    const hits = ray.intersectObject(mesh);
+    if (hits.length) setFocusFromHit(hits[0]);
+    else clearFocus();
+  });
+}
+
 let rot = [0, 0, 0];
 
 function setRot(axis, delta) {
@@ -329,6 +412,7 @@ async function api(path, body) {
 let lastResult = null;
 function showResult(res) {
   lastResult = res;
+  clearFocus();
   let html = `<b>${fmtLen(res.bbox[0])} × ${fmtLen(res.bbox[1])} × ${fmtLen(res.bbox[2])}</b> · ${fmtVol(res.volume_cm3)}`;
   for (const w of res.warnings || []) html += `<div class="warn">⚠ ${w}</div>`;
   $('stats').innerHTML = html;
@@ -460,10 +544,11 @@ async function doDescribe(mode) {
   if (photo) log(`with reference photo: ${photo.name}`, 'dim');
   startProgress(mode === 'edit' ? 'describe_edit' : 'describe_new',
                 mode === 'edit' ? `editing ${model}` : 'building your part',
-                photo ? 100 : (mode === 'edit' ? 60 : 75));
+                photo ? 130 : (mode === 'edit' ? 85 : 100));
   let describeOk = false;
   try {
-    const res = await api('/api/describe', { mode, model, description, image: photo });
+    const res = await api('/api/describe', { mode, model, description, image: photo,
+      focus: mode === 'edit' ? focus : null });
     describeOk = true;
     $('scale').value = 1;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
@@ -546,6 +631,7 @@ $('roty').onclick = () => setRot(1, 90);
 $('rotz').onclick = () => setRot(2, 90);
 $('rotreset').onclick = () => setRot(-1, 0);
 $('buildnew').onclick = () => doDescribe('new');
+$('focusclear').onclick = clearFocus;
 $('desc').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || e.shiftKey) return;
   e.preventDefault();
