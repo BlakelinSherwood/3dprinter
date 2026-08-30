@@ -10,11 +10,29 @@ Claude (local session on the Mac)
         via mcp-3d-printer-server (MCP), configured in .mcp.json
 ```
 
+## Installing OctoPrint itself (macOS)
+
+OctoPrint does not support Python 3.14 yet: with a 3.14 venv, pip falls back to
+ancient OctoPrint 1.8.7 and then fails building PyYAML 5.4.1
+(`'build_ext' object has no attribute 'cython_sources'`). Use Python 3.13:
+
+```bash
+brew install python@3.13
+rm -rf ~/octoprint-venv
+python3.13 -m venv ~/octoprint-venv
+~/octoprint-venv/bin/pip install --upgrade pip wheel
+~/octoprint-venv/bin/pip install OctoPrint      # should resolve to 1.10+/1.11+
+~/octoprint-venv/bin/octoprint serve --port 5001
+```
+
+First run: open http://127.0.0.1:5001, complete the setup wizard (create your
+user), then generate the API key as described below.
+
 ## Quickstart (on the Mac)
 
 ```bash
-git clone <this repo> ~/3d-printer-pipeline
-cd ~/3d-printer-pipeline
+git clone https://github.com/BlakelinSherwood/3dprinter ~/3dprinter
+cd ~/3dprinter
 export OCTOPRINT_API_KEY="<your key — see below>"   # also add to ~/.zshrc
 chmod +x setup-mac.sh scripts/*.sh
 ./setup-mac.sh

@@ -16,7 +16,23 @@ code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 "$OCTO_URL/api/versio
 case "$code" in
   200) ok "OctoPrint is up and the API key works" ;;
   403|401) bad "OctoPrint is up but OCTOPRINT_API_KEY is missing/invalid (HTTP $code). See README section 'Getting an API key'." ;;
-  000) bad "OctoPrint not reachable. Start it with: ~/octoprint-venv/bin/octoprint serve --port 5001" ;;
+  000)
+    if [ -x "$HOME/octoprint-venv/bin/octoprint" ]; then
+      bad "OctoPrint installed but not running. Start it: ~/octoprint-venv/bin/octoprint serve --port 5001"
+    else
+      bad "OctoPrint is NOT installed in ~/octoprint-venv (no octoprint binary)."
+      pyver=$("$HOME/octoprint-venv/bin/python" --version 2>/dev/null | awk '{print $2}')
+      case "$pyver" in
+        3.14*|3.15*)
+          echo "         Cause: venv uses Python $pyver, which OctoPrint does not support."
+          echo "         Fix:   brew install python@3.13 && rm -rf ~/octoprint-venv \\"
+          echo "                  && python3.13 -m venv ~/octoprint-venv \\"
+          echo "                  && ~/octoprint-venv/bin/pip install --upgrade pip wheel \\"
+          echo "                  && ~/octoprint-venv/bin/pip install OctoPrint" ;;
+        *)
+          echo "         Fix:   see README section 'Installing OctoPrint itself (macOS)'" ;;
+      esac
+    fi ;;
   *) bad "Unexpected HTTP $code from $OCTO_URL/api/version" ;;
 esac
 
