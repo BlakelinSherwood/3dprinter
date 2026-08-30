@@ -617,13 +617,31 @@ async function loadQueue() {
       size.className = 'qsize'; size.textContent = fmtSize(f.size);
       const del = document.createElement('button');
       del.textContent = '×'; del.title = `Delete ${f.name} from OctoPrint`;
+      // Two-step inline confirm: native confirm() dialogs are suppressed in
+      // some embedded browsers (they return false without ever showing).
+      let armTimer = null;
       del.onclick = async () => {
-        if (!confirm(`Delete ${f.name} from OctoPrint storage?`)) return;
+        if (!del.classList.contains('armed')) {
+          del.classList.add('armed');
+          del.textContent = 'delete?';
+          armTimer = setTimeout(() => {
+            del.classList.remove('armed');
+            del.textContent = '×';
+          }, 4000);
+          return;
+        }
+        clearTimeout(armTimer);
+        del.disabled = true;
         try {
           await api('/api/files/delete', { name: f.name });
           log(`deleted ${f.name} from OctoPrint`, 'ok');
           loadQueue();
-        } catch (e) { log(e.message, 'bad'); }
+        } catch (e) {
+          log(e.message, 'bad');
+          del.disabled = false;
+          del.classList.remove('armed');
+          del.textContent = '×';
+        }
       };
       row.append(name, size, del);
       list.appendChild(row);

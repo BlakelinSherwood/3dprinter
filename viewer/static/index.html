@@ -81,7 +81,8 @@
   #queue { border-top: 1px solid var(--edge); padding: 8px 16px; flex: none; }
   #queue summary { color: var(--dim); font-size: 12px; cursor: pointer;
     user-select: none; }
-  #queue[open] #qlist { max-height: 130px; overflow-y: auto; margin-top: 6px; }
+  #queue[open] #qlist { max-height: 130px; overflow-y: auto; margin-top: 6px;
+    padding-right: 14px; scrollbar-gutter: stable; }
   .qrow { display: flex; align-items: center; gap: 8px; padding: 3px 0;
     font-size: 12px; }
   .qrow .qname { flex: 1; overflow: hidden; text-overflow: ellipsis;
@@ -90,6 +91,8 @@
   .qrow button { flex: 0 0 22px; padding: 1px 0; font-size: 13px;
     background: var(--bg); border: 1px solid var(--edge); color: var(--dim); }
   .qrow button:hover { color: var(--bad); border-color: var(--bad); }
+  .qrow button.armed { flex-basis: auto; padding: 1px 8px; color: #fff;
+    background: var(--bad); border-color: var(--bad); font-size: 11px; }
   #est { color: var(--dim); font-size: 12px; margin-top: 4px; }
   #est b { color: var(--text); font-weight: 600; }
   #log { height: 150px; flex: none; overflow-y: auto; background: var(--bg);
