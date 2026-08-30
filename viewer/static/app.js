@@ -5,7 +5,7 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 const $ = (id) => document.getElementById(id);
 const log = (msg, cls) => {
   const el = document.createElement('div');
-  if (cls) el.className = cls;
+  if (cls) el.className = cls;   // ok | bad | dim | warn
   el.textContent = msg;
   $('log').appendChild(el);
   $('log').scrollTop = $('log').scrollHeight;
@@ -130,15 +130,63 @@ async function api(path, body) {
   return data;
 }
 
+function showResult(res) {
+  let html = `<b>${res.bbox[0]} × ${res.bbox[1]} × ${res.bbox[2]} mm</b> · ${res.volume_cm3} cm³`;
+  for (const w of res.warnings || []) html += `<div class="warn">⚠ ${w}</div>`;
+  $('stats').innerHTML = html;
+  showSTL(res.stl);
+  for (const w of res.warnings || []) log('⚠ ' + w, 'warn');
+}
+
+let busy = false;
+function setBusy(b) {
+  busy = b;
+  for (const id of ['buildnew', 'editsel', 'generate']) $(id).disabled = b;
+  if (b) { $('slice').disabled = true; $('upload').disabled = true; }
+  else setButtons();
+}
+
+async function refreshModels(selectName) {
+  models = await (await fetch('/api/models')).json();
+  const sel = $('model');
+  sel.innerHTML = '';
+  for (const m of models) {
+    const o = document.createElement('option');
+    o.value = m.name; o.textContent = m.name + (m.summary ? ' — ' + m.summary : '');
+    sel.appendChild(o);
+  }
+  if (selectName) sel.value = selectName;
+  const cur = models.find(x => x.name === sel.value);
+  if (cur) renderParams(cur);
+}
+
+async function doDescribe(mode) {
+  const description = $('desc').value.trim();
+  if (!description) { log('describe the part first', 'bad'); return; }
+  const model = $('model').value;
+  if (mode === 'edit' && !model) { log('no model selected to edit', 'bad'); return; }
+  setBusy(true);
+  log(mode === 'edit' ? `editing ${model}: ${description}` : `building: ${description}`, 'dim');
+  log('asking Claude — this can take a minute…', 'dim');
+  try {
+    const res = await api('/api/describe', { mode, model, description });
+    $('scale').value = 1;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true; state.sliced = false;
+    $('desc').value = '';
+    log(`${res.model} ready` + (res.attempts > 1 ? ` (self-repaired after an error)` : ''), 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  setBusy(false);
+}
+
 async function doGenerate() {
   const name = $('model').value;
   $('generate').disabled = true;
   log(`generate ${name} ` + JSON.stringify(currentParams()), 'dim');
   try {
-    const res = await api('/api/generate', { model: name, params: currentParams() });
-    $('stats').innerHTML =
-      `<b>${res.bbox[0]} × ${res.bbox[1]} × ${res.bbox[2]} mm</b> · ${res.volume_cm3} cm³`;
-    showSTL(res.stl);
+    const res = await api('/api/generate', { model: name, params: currentParams(), scale: $('scale').value || '1' });
+    showResult(res);
     state.generated = true; state.sliced = false;
     log('STL ready', 'ok');
   } catch (e) { log(e.message, 'bad'); }
@@ -168,9 +216,13 @@ async function doUpload() {
 }
 
 $('generate').onclick = doGenerate;
+$('buildnew').onclick = () => doDescribe('new');
+$('editsel').onclick = () => doDescribe('edit');
 $('slice').onclick = doSlice;
 $('upload').onclick = doUpload;
+$('scale').onchange = () => { if (!busy) doGenerate(); };
 $('model').onchange = () => {
+  $('scale').value = 1;
   const m = models.find(x => x.name === $('model').value);
   renderParams(m);
   state.generated = state.sliced = false;

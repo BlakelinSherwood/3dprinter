@@ -12,12 +12,17 @@ Serves a Three.js viewer and a small JSON API:
 Printing is deliberately absent: uploads are select=false/print=false via the
 existing script, and there is no endpoint that can start a print.
 """
+import glob
 import importlib.util
 import inspect
 import json
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,6 +42,143 @@ MIME = {
 
 _module_cache = {}   # path -> (mtime, module)
 _generate_lock = threading.Lock()   # OCC is not thread-safe
+_codegen_lock = threading.Lock()    # one description job at a time
+
+PLATE_X, PLATE_Y, PLATE_Z = 220.0, 220.0, 250.0
+
+
+def find_claude():
+    """The Claude Code CLI; PATH first, then the usual install locations."""
+    p = shutil.which("claude")
+    if p:
+        return p
+    candidates = glob.glob(str(Path.home() / ".nvm/versions/node/*/bin/claude"))
+    candidates += ["/usr/local/bin/claude", "/opt/homebrew/bin/claude"]
+    for c in sorted(candidates, reverse=True):
+        if Path(c).is_file():
+            return c
+    raise RuntimeError("claude CLI not found - install Claude Code or add it to PATH")
+
+
+def design_rules():
+    f = Path(__file__).resolve().parent / "design_rules.md"
+    return f.read_text() if f.is_file() else ""
+
+
+MODEL_CONTRACT = """You write parametric 3D models as single-file CadQuery scripts.
+
+The file contract (follow it exactly):
+- Very first line: `# model: snake_case_name` naming the part (short, specific).
+- Then a module docstring whose FIRST line is a <=70 char summary of the part.
+- `import cadquery as cq` (plus Python stdlib only; nothing else).
+- Define `build(...)` where every parameter is a keyword with a NUMERIC
+  default in millimetres, returning a cq.Workplane solid. 3-6 parameters,
+  each one something a user would meaningfully tweak.
+- End with the standard runner:
+
+if __name__ == "__main__":
+    import sys
+    out = sys.argv[1] if len(sys.argv) > 1 else "part.stl"
+    solid = build()
+    cq.exporters.export(solid, out, tolerance=0.01, angularTolerance=0.1)
+    bb = solid.val().BoundingBox()
+    print(f"Wrote {out}: {bb.xlen:.1f} x {bb.ylen:.1f} x {bb.zlen:.1f} mm")
+
+- No file I/O outside that runner, no network, no prints during build().
+- Model the part already oriented for printing per the design rules below,
+  bottom face on the z=0 plane.
+- Prefer simple robust CadQuery: boxes, cylinders, extrudes, cuts, unions,
+  fillet/chamfer with conservative radii. Selectors can be brittle - when
+  filleting, select edges precisely (e.g. "|Z", ">Z") and keep radii small
+  relative to the faces they touch, or skip the fillet.
+"""
+
+OUTPUT_RULE = ("\nReply with ONLY the complete Python source file. "
+               "No markdown fences, no commentary before or after.")
+
+
+def call_claude(prompt):
+    scratch = tempfile.mkdtemp(prefix="studio-codegen-")
+    p = subprocess.run(
+        [find_claude(), "-p", prompt, "--model", "sonnet", "--output-format", "text"],
+        cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=420,
+    )
+    if p.returncode != 0:
+        out = (p.stderr or "") + (p.stdout or "")
+        if "Not logged in" in out or "/login" in out:
+            raise RuntimeError(
+                "The claude CLI is not logged in, so description-to-model is "
+                "unavailable. One-time fix: open Terminal, run `claude`, then "
+                "type /login and finish the browser sign-in. Everything else "
+                "in Part Studio works without it.")
+        raise RuntimeError(f"claude CLI failed: {out[-800:]}")
+    return p.stdout.strip()
+
+
+def extract_code(reply):
+    m = re.search(r"```(?:python)?\s*\n(.*?)```", reply, re.S)
+    code = (m.group(1) if m else reply).strip()
+    if "def build" not in code or "import cadquery" not in code:
+        raise ValueError("reply did not contain a valid model file:\n" + reply[:600])
+    return code + "\n"
+
+
+def slugify(text):
+    words = re.findall(r"[a-z0-9]+", text.lower())[:4]
+    return "_".join(words) or "part"
+
+
+def describe(mode, name, description):
+    """Natural-language build/edit. Writes models/<name>.py after validating
+    that the generated file actually loads and builds."""
+    rules = design_rules()
+    if mode == "edit":
+        path = MODELS / f"{name}.py"
+        if not path.is_file():
+            raise FileNotFoundError(f"no such model: {name}")
+        original = path.read_text()
+        task = (f"Modify this existing model per the request below. Keep the same "
+                f"`# model:` name and overall structure; change only what the "
+                f"request implies.\n\nRequest: {description}\n\n"
+                f"Current file:\n{original}")
+    else:
+        original = None
+        task = f"Write a new model for this request: {description}"
+
+    prompt = (MODEL_CONTRACT + "\n# Printer design rules (mandatory)\n" + rules
+              + "\n# Task\n" + task + OUTPUT_RULE)
+
+    with _codegen_lock:
+        last_err = None
+        for attempt in (1, 2):
+            reply = call_claude(prompt)
+            code = extract_code(reply)
+            if mode == "edit":
+                out_name = name
+            else:
+                m = re.match(r"#\s*model:\s*([a-zA-Z0-9_]+)", code)
+                out_name = (m.group(1).lower() if m else slugify(description))[:40]
+            path = MODELS / f"{out_name}.py"
+            if path.is_file():   # keep every overwritten version
+                hist = MODELS / ".history"
+                hist.mkdir(exist_ok=True)
+                (hist / f"{out_name}-{int(time.time())}.py").write_text(path.read_text())
+            path.write_text(code)
+            try:
+                result = generate(out_name, {})
+                result["model"] = out_name
+                result["attempts"] = attempt
+                return result
+            except Exception:
+                last_err = traceback.format_exc()
+                prompt += (f"\n\nYour previous file failed when run:\n{last_err[-1500:]}"
+                           f"\nOutput the complete corrected file.{OUTPUT_RULE}")
+        # both attempts failed - put things back the way they were
+        if mode == "edit" and original is not None:
+            path.write_text(original)
+        elif path.is_file():
+            path.unlink()
+        raise RuntimeError(f"model generation failed twice; last error:\n{last_err}")
 
 
 def load_model(path: Path):
@@ -82,24 +224,74 @@ def list_models():
     return items
 
 
-def generate(name, params):
+def parse_scale(value):
+    """Accept decimals and hobby-scale ratios: 1, 0.5, 2, "1/64", "1:55", "150%"."""
+    if value is None:
+        return 1.0, "1"
+    text = str(value).strip().lower().rstrip("x").strip() or "1"
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*[/:]\s*(\d+(?:\.\d+)?)", text)
+    if m:
+        num, den = float(m.group(1)), float(m.group(2))
+        if den == 0:
+            raise ValueError("scale denominator is zero")
+        return num / den, f"{m.group(1)}/{m.group(2)}"
+    if text.endswith("%"):
+        return float(text[:-1]) / 100.0, text
+    return float(text), text
+
+
+def generate(name, params, scale=1.0):
     import cadquery as cq
     path = MODELS / f"{name}.py"
     if not path.is_file():
         raise FileNotFoundError(f"no such model: {name}")
     mod = load_model(path)
     kwargs = {k: float(v) for k, v in (params or {}).items()}
+    scale, scale_label = parse_scale(scale)
+    if not 0.001 <= scale <= 100:
+        raise ValueError(f"scale {scale_label} ({scale:g}) outside 0.001-100")
+    warnings = []
     with _generate_lock:
-        solid = mod.build(**kwargs)
+        shape = as_shape(mod.build(**kwargs))
+        if scale != 1.0:
+            shape = shape.scale(scale)
+            warnings.append(f"scaled {scale_label} = x{scale:g} (params stay in real mm)")
+        # Output prep: the slicer expects the part resting on the bed plane.
+        bb = shape.BoundingBox()
+        if abs(bb.zmin) > 1e-4:
+            shape = shape.translate(cq.Vector(0, 0, -bb.zmin))
+            if scale == 1.0:
+                warnings.append(f"model was {bb.zmin:+.2f}mm off the bed - dropped to z=0")
         OUTPUT.mkdir(exist_ok=True)
         stl = OUTPUT / f"{name}.stl"
-        cq.exporters.export(solid, str(stl), tolerance=0.01, angularTolerance=0.1)
-    shape = as_shape(solid)
+        cq.exporters.export(shape, str(stl), tolerance=0.01, angularTolerance=0.1)
     bb = shape.BoundingBox()
+    # Too big: hard printer limits.
+    if bb.xlen > PLATE_X or bb.ylen > PLATE_Y:
+        warnings.append(f"TOO BIG for the 220x220 plate: {bb.xlen:.0f} x {bb.ylen:.0f} - will not print")
+    elif bb.xlen > 200 or bb.ylen > 200:
+        warnings.append("close to the plate edge - prefer <= 200mm in X/Y")
+    if bb.zlen > PLATE_Z:
+        warnings.append(f"TOO TALL for 250mm height: {bb.zlen:.0f} - will not print")
+    # Too small: printability heuristics for a 0.4 nozzle.
+    vol, area = shape.Volume(), shape.Area()
+    if min(bb.xlen, bb.ylen, bb.zlen) < 2.0:
+        warnings.append(f"very small ({min(bb.xlen, bb.ylen, bb.zlen):.1f}mm min dimension) - unlikely to print")
+    elif area > 0:
+        # For shell-like parts the mean wall is ~2*V/A; below two perimeter
+        # widths (0.88mm) the slicer starts dropping walls entirely.
+        t_est = 2.0 * vol / area
+        if t_est < 0.88:
+            warnings.append(
+                f"features estimated ~{t_est:.2f}mm thick - below the 0.88mm "
+                f"two-perimeter minimum, may slice incompletely")
     return {
         "stl": f"/output/{name}.stl",
         "bbox": [round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
-        "volume_cm3": round(shape.Volume() / 1000.0, 2),
+        "volume_cm3": round(vol / 1000.0, 2),
+        "scale": scale,
+        "scale_label": scale_label,
+        "warnings": warnings,
     }
 
 
@@ -169,11 +361,15 @@ class Handler(BaseHTTPRequestHandler):
         try:
             req = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/api/generate":
-                return self._send(200, generate(req["model"], req.get("params")))
+                return self._send(200, generate(req["model"], req.get("params"),
+                                                req.get("scale", 1.0)))
             if self.path == "/api/slice":
                 return self._send(200, do_slice(req["model"]))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
+            if self.path == "/api/describe":
+                return self._send(200, describe(
+                    req.get("mode", "new"), req.get("model"), req["description"]))
             return self._send(404, {"error": "not found"})
         except Exception:
             return self._send(500, {"error": traceback.format_exc()})

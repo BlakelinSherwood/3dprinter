@@ -145,7 +145,19 @@ leaving the browser.
 scripts/studio.sh          # serves http://127.0.0.1:8434
 ```
 
+- **Describe it** builds a brand-new model from a sentence ("Build new") or
+  rewrites the selected one ("Edit selected"). Generation shells out to the
+  `claude` CLI headlessly with `viewer/design_rules.md` — the Ender 3 V2 / PLA
+  / 0.4-nozzle design rules — injected into every request, validates that the
+  generated file actually builds (one automatic repair round on failure), and
+  keeps prior versions in `models/.history/`. Requires a one-time `claude`
+  CLI login (`claude`, then `/login`); everything else works without it.
 - **Generate** re-runs the CadQuery model with the values in the form.
+- **scale ×** applies a display/output scale: decimals (`0.5`, `2`) or hobby
+  ratios (`1/64`, `1:55`, `150%`). Parts are auto-dropped onto the bed plane,
+  and warnings flag anything too big for 220×220×250, close to the plate
+  edge, or too small to print (tiny bounding box, or estimated feature
+  thickness under two perimeter widths).
 - **Slice + check** runs the normal `test-slice.sh` path; the safety report is
   shown verbatim, and **Upload stays disabled unless the check passes**.
 - **Upload** independently re-runs `check-gcode.py` on the file before sending

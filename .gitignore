@@ -9,3 +9,4 @@ temp/
 *.stl
 !test-parts/*.stl
 __pycache__/
+models/.history/
