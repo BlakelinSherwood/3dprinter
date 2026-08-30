@@ -1,8 +1,11 @@
 {
   "type": "process",
-  "name": "0.20mm Standard @Ender3V2",
+  "name": "0.20mm Standard @claude-pipeline",
   "from": "user",
   "instantiation": "true",
+  "compatible_printers": [
+    "Creality Ender-3 V2 0.4 nozzle"
+  ],
   "layer_height": "0.2",
   "initial_layer_print_height": "0.2",
   "line_width": "0.44",
@@ -23,5 +26,6 @@
   "skirt_loops": "2",
   "brim_type": "no_brim",
   "enable_support": "0",
-  "seam_position": "aligned"
+  "seam_position": "aligned",
+  "inherits": "0.20mm Standard @Creality Ender3V2"
 }

@@ -12,21 +12,35 @@ Claude (local session on the Mac)
 
 ## Installing OctoPrint itself (macOS)
 
-OctoPrint does not support Python 3.14 yet: with a 3.14 venv, pip falls back to
-ancient OctoPrint 1.8.7 and then fails building PyYAML 5.4.1
-(`'build_ext' object has no attribute 'cython_sources'`). Use Python 3.13:
+OctoPrint does **not** support Python 3.14. With a 3.14 venv, pip silently falls
+back to ancient OctoPrint 1.8.7, which then dies building PyYAML 5.4.1 with:
+
+```
+'build_ext' object has no attribute 'cython_sources'
+```
+
+Build the venv on **Python 3.13** instead:
 
 ```bash
 brew install python@3.13
-rm -rf ~/octoprint-venv
+rm -rf ~/octoprint-venv                       # discard any 3.14 venv
 python3.13 -m venv ~/octoprint-venv
-~/octoprint-venv/bin/pip install --upgrade pip wheel
-~/octoprint-venv/bin/pip install OctoPrint      # should resolve to 1.10+/1.11+
-~/octoprint-venv/bin/octoprint serve --port 5001
+~/octoprint-venv/bin/python -m pip install --upgrade pip wheel setuptools
+~/octoprint-venv/bin/pip install "octoprint>=1.10"
+~/octoprint-venv/bin/octoprint --version      # expect 1.10 or newer
 ```
 
-First run: open http://127.0.0.1:5001, complete the setup wizard (create your
-user), then generate the API key as described below.
+Then start it (port 5001, loopback only):
+
+```bash
+~/octoprint-venv/bin/octoprint serve --host 127.0.0.1 --port 5001
+```
+
+Leave it running and open http://127.0.0.1:5001 to complete the first-run
+wizard, then generate the API key as described below. **Until the wizard is
+finished, OctoPrint returns HTTP 403 for privileged API calls such as file
+upload**, even with a valid API key — so `setup-mac.sh` cannot pass until you
+have created the admin account.
 
 ## Quickstart (on the Mac)
 
@@ -83,6 +97,11 @@ brings a fresh local session fully up to speed lives in
 layers, 3 walls, 15% grid infill, conservative speeds; filament = generic PLA at
 210/60°C). They are a sensible starting point, **but watch the first layer of
 your first print closely**.
+
+`.mcp.json` must point the MCP server at **both** the machine and process
+profiles (`SLICER_PROFILE`, joined with `;`) plus the filament profile
+(`FILAMENT_PROFILE`). Passing only a process profile makes `slice_stl` fail with
+a bare "Slicer failed" — OrcaSlicer needs a machine profile to slice at all.
 
 Preferred long-term path: open OrcaSlicer once, add printer **Creality Ender-3
 V2** with its bundled system presets, tweak to taste, then point `SLICER_PROFILE`

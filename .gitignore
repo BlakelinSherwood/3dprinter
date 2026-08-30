@@ -3,3 +3,4 @@ output/
 *.3mf
 .env
 .DS_Store
+00000.log
