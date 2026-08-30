@@ -16,7 +16,7 @@ PROF="$REPO_DIR/profiles/ender3v2"
 
 "$ORCA_BIN" \
   --load-settings "$PROF/machine.json;$PROF/process.json" \
-  --load-filament "$PROF/filament_pla.json" \
+  --load-filaments "$PROF/filament_pla.json" \
   --slice 0 \
   --debug 1 \
   --export-3mf "$OUT_DIR/$BASE.3mf" \
@@ -26,7 +26,7 @@ unzip -p "$OUT_DIR/$BASE.3mf" Metadata/plate_1.gcode > "$OUT_DIR/$BASE.gcode"
 
 lines=$(wc -l < "$OUT_DIR/$BASE.gcode")
 echo "Sliced OK: $OUT_DIR/$BASE.gcode ($lines lines of G-code)"
-grep -m1 -E "^M104|^M109" "$OUT_DIR/$BASE.gcode" >/dev/null || {
-  echo "WARNING: no hotend temperature command found in G-code — inspect before printing" >&2
-  exit 1
-}
+
+# Safety gate: PLA temperature ranges + build-volume containment. Non-zero exit
+# here means the G-code must not be printed.
+"$REPO_DIR/scripts/check-gcode.py" "$OUT_DIR/$BASE.gcode"

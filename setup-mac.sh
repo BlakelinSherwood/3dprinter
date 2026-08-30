@@ -36,8 +36,13 @@ echo "== 3. Node.js / MCP server =="
 if command -v npx >/dev/null 2>&1; then
   ok "npx available ($(node --version 2>/dev/null))"
   info "Priming mcp-3d-printer-server download (npx cache)..."
-  npx -y mcp-3d-printer-server --help >/dev/null 2>&1
-  ok "mcp-3d-printer-server fetchable via npx"
+  # </dev/null matters: the package ignores --help and starts its stdio server,
+  # which blocks forever on an interactive terminal. Closing stdin makes it exit.
+  if npx -y mcp-3d-printer-server --help </dev/null >/dev/null 2>&1; then
+    ok "mcp-3d-printer-server fetchable via npx"
+  else
+    bad "npx could not fetch/run mcp-3d-printer-server"
+  fi
 else
   if command -v brew >/dev/null 2>&1; then
     info "Installing Node.js via Homebrew..."

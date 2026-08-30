@@ -10,11 +10,43 @@ Claude (local session on the Mac)
         via mcp-3d-printer-server (MCP), configured in .mcp.json
 ```
 
+## Installing OctoPrint itself (macOS)
+
+OctoPrint does **not** support Python 3.14. If your `python3` is 3.14, a plain
+`python3 -m venv` produces a venv that pip silently downgrades to OctoPrint
+1.8.7, which then dies building PyYAML 5.4.1 with:
+
+```
+'build_ext' object has no attribute 'cython_sources'
+```
+
+Build the venv on **Python 3.13** instead:
+
+```bash
+brew install python@3.13
+rm -rf ~/octoprint-venv                       # discard any 3.14 venv
+$(brew --prefix python@3.13)/bin/python3.13 -m venv ~/octoprint-venv
+~/octoprint-venv/bin/python -m pip install --upgrade pip wheel setuptools
+~/octoprint-venv/bin/pip install "octoprint>=1.10"
+~/octoprint-venv/bin/octoprint --version      # expect 1.10 or newer
+```
+
+Then start it (port 5001, loopback only):
+
+```bash
+~/octoprint-venv/bin/octoprint serve --host 127.0.0.1 --port 5001
+```
+
+Leave it running and open http://127.0.0.1:5001 to complete the first-run
+wizard. **Until the wizard is finished, OctoPrint returns HTTP 403 for
+privileged API calls such as file upload**, even with a valid API key — so
+`setup-mac.sh` cannot pass until you have created the admin account.
+
 ## Quickstart (on the Mac)
 
 ```bash
-git clone <this repo> ~/3d-printer-pipeline
-cd ~/3d-printer-pipeline
+git clone <this repo> ~/3dprinter
+cd ~/3dprinter
 export OCTOPRINT_API_KEY="<your key — see below>"   # also add to ~/.zshrc
 chmod +x setup-mac.sh scripts/*.sh
 ./setup-mac.sh

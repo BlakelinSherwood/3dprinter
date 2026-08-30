@@ -10,7 +10,7 @@
         "API_KEY": "${OCTOPRINT_API_KEY}",
         "SLICER_TYPE": "orcaslicer",
         "SLICER_PATH": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
-        "SLICER_PROFILE": "${HOME}/3d-printer-pipeline/profiles/ender3v2/process.json"
+        "SLICER_PROFILE": "${HOME}/3dprinter/profiles/ender3v2/process.json"
       }
     }
   }
