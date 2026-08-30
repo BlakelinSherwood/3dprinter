@@ -173,6 +173,14 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   bare error.
 - **Upload** independently re-runs `check-gcode.py` on the file before sending
   it, and always uploads with `select=false&print=false`.
+- The header shows a **live printer strip** (connection state, nozzle/bed
+  temperatures, 5s poll), and an **OctoPrint queue** section lists the G-code
+  files on the printer with per-file delete. Both are read-only against the
+  printer - delete is the only mutation, and it never touches a selected or
+  printing file (OctoPrint refuses, and the refusal is shown).
+- **undo edit** swaps the selected model with its most recent saved version
+  from `models/.history/` - pressing it again swaps back, so no version is
+  ever lost. **&#8595; STL** downloads the currently generated STL.
 - There is deliberately **no print button** — the server has no endpoint that
   can start a print.
 

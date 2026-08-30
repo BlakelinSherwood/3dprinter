@@ -112,6 +112,7 @@ function setRot(axis, delta) {
 function setButtons() {
   $('slice').disabled = !state.generated;
   $('upload').disabled = !state.sliced;
+  if (typeof syncModelRow === 'function') syncModelRow();
 }
 
 function renderParams(model) {
@@ -378,6 +379,7 @@ async function doUpload() {
   try {
     const res = await api('/api/upload', { model: $('model').value });
     log(res.report, res.ok ? 'ok' : 'bad');
+    if (res.ok) loadQueue();
   } catch (e) { log(e.message, 'bad'); }
   $('upload').disabled = false;
 }
@@ -469,6 +471,95 @@ window.addEventListener('resize', () => {
   const st = panelState();
   if (st.float) setFloat(true, st.x, st.y);
 }
+
+// ---------------------------- printer status ----------------------------
+function tempPair(t) {
+  return t ? `${Math.round(t.actual)}/${Math.round(t.target)}°` : '–';
+}
+async function pollPrinter() {
+  if (document.hidden) return;
+  try {
+    const p = await (await fetch('/api/printer')).json();
+    const dot = $('pdot');
+    let text = p.state || 'unknown';
+    dot.className = 'dot';
+    if (p.temps && /print/i.test(p.state)) dot.classList.add('busy');
+    else if (p.temps) dot.classList.add('ok');
+    if (p.temps) {
+      text += ` · nozzle ${tempPair(p.temps.tool0)} · bed ${tempPair(p.temps.bed)}`;
+    }
+    $('ptext').textContent = text;
+  } catch {
+    $('pdot').className = 'dot';
+    $('ptext').textContent = 'studio server unreachable';
+  }
+}
+pollPrinter();
+setInterval(pollPrinter, 5000);
+
+// ---------------------------- OctoPrint queue ----------------------------
+function fmtSize(b) {
+  if (b == null) return '';
+  return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB'
+                     : Math.round(b / 1024) + ' KB';
+}
+async function loadQueue() {
+  try {
+    const files = await (await fetch('/api/files')).json();
+    if (files.error) throw new Error('queue unavailable');
+    $('qcount').textContent = files.length;
+    const list = $('qlist');
+    list.innerHTML = '';
+    for (const f of files) {
+      const row = document.createElement('div');
+      row.className = 'qrow';
+      const name = document.createElement('span');
+      name.className = 'qname'; name.textContent = f.name; name.title = f.name;
+      const size = document.createElement('span');
+      size.className = 'qsize'; size.textContent = fmtSize(f.size);
+      const del = document.createElement('button');
+      del.textContent = '×'; del.title = `Delete ${f.name} from OctoPrint`;
+      del.onclick = async () => {
+        if (!confirm(`Delete ${f.name} from OctoPrint storage?`)) return;
+        try {
+          await api('/api/files/delete', { name: f.name });
+          log(`deleted ${f.name} from OctoPrint`, 'ok');
+          loadQueue();
+        } catch (e) { log(e.message, 'bad'); }
+      };
+      row.append(name, size, del);
+      list.appendChild(row);
+    }
+  } catch (e) { $('qcount').textContent = '?'; }
+}
+$('queue').addEventListener('toggle', () => { if ($('queue').open) loadQueue(); });
+loadQueue();   // count badge on load
+
+// ---------------------------- revert + download ----------------------------
+function syncModelRow() {
+  const m = models.find(x => x.name === $('model').value);
+  $('revert').disabled = !(m && m.has_history);
+  const dl = $('dl');
+  if (state.generated && m) {
+    dl.href = `/output/${m.name}.stl`;
+    dl.setAttribute('download', `${m.name}.stl`);
+    dl.classList.remove('off');
+  } else {
+    dl.classList.add('off');
+  }
+}
+$('revert').onclick = async () => {
+  const model = $('model').value;
+  if (!model) return;
+  setBusy(true);
+  try {
+    const res = await api('/api/revert', { model });
+    log(res.note, 'ok');
+    await refreshModels(model);
+    await doGenerate();
+  } catch (e) { log(e.message, 'bad'); }
+  setBusy(false);
+};
 
 (async function init() {
   models = await (await fetch('/api/models')).json();

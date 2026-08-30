@@ -14,6 +14,10 @@ existing script, and there is no endpoint that can start a print.
 """
 import base64
 import glob
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
 import importlib.util
 import inspect
 import json
@@ -376,10 +380,12 @@ def list_models():
         try:
             mod = load_model(f)
             doc = (mod.__doc__ or "").strip().splitlines()
+            hist = MODELS / ".history"
             items.append({
                 "name": f.stem,
                 "summary": doc[0] if doc else "",
                 "params": model_params(mod),
+                "has_history": bool(hist.is_dir() and list(hist.glob(f"{f.stem}-*.py"))),
             })
         except Exception:
             items.append({"name": f.stem, "summary": "LOAD ERROR",
@@ -586,6 +592,77 @@ def do_upload(name):
     return {"ok": code == 0, "report": out}
 
 
+OCTO_URL = "http://127.0.0.1:5001"
+
+
+def octo_request(path, method="GET"):
+    key = os.environ.get("OCTOPRINT_API_KEY", "")
+    req = urllib.request.Request(OCTO_URL + path, method=method,
+                                 headers={"X-Api-Key": key})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        body = r.read()
+        return json.loads(body) if body.strip() else {}
+
+
+def printer_status():
+    """Read-only printer snapshot: connection state + temperatures."""
+    try:
+        conn = octo_request("/api/connection")
+    except (urllib.error.URLError, OSError):
+        return {"reachable": False, "state": "OctoPrint unreachable"}
+    state = conn.get("current", {}).get("state", "Unknown")
+    out = {"reachable": True, "state": state, "temps": None}
+    try:
+        printer = octo_request("/api/printer?exclude=sd,history")
+        out["temps"] = printer.get("temperature")
+        out["state"] = printer.get("state", {}).get("text", state)
+    except urllib.error.HTTPError:
+        pass   # 409: no printer connected - state alone is the answer
+    except (urllib.error.URLError, OSError):
+        pass
+    return out
+
+
+def octo_files():
+    d = octo_request("/api/files/local")
+    files = []
+    for f in d.get("files", []):
+        if f.get("type") == "machinecode" or f.get("name", "").endswith(".gcode"):
+            files.append({"name": f["name"], "size": f.get("size"),
+                          "date": f.get("date")})
+    files.sort(key=lambda x: x.get("date") or 0, reverse=True)
+    return files
+
+
+def octo_delete(name):
+    if "/" in name or name.startswith("."):
+        raise ValueError("bad filename")
+    try:
+        octo_request("/api/files/local/" + urllib.parse.quote(name), method="DELETE")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise FileNotFoundError(f"{name} is not on the printer")
+        if e.code == 409:
+            raise RuntimeError(f"{name} is in use (selected or printing) - not deleted")
+        raise
+    return {"deleted": name}
+
+
+def revert_model(name):
+    """Swap the model with its most recent saved version. Calling it again
+    swaps back, so nothing is ever lost."""
+    hist = MODELS / ".history"
+    versions = sorted(hist.glob(f"{name}-*.py")) if hist.is_dir() else []
+    if not versions:
+        raise ValueError(f"no earlier version of {name} recorded")
+    latest = versions[-1]
+    path = MODELS / f"{name}.py"
+    current = path.read_text()
+    path.write_text(latest.read_text())
+    latest.write_text(current)
+    return {"model": name, "note": "previous version restored - revert again to switch back"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -618,6 +695,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(p)
         if route == "/api/models":
             return self._send(200, list_models())
+        if route == "/api/printer":
+            return self._send(200, printer_status())
+        if route == "/api/files":
+            try:
+                return self._send(200, octo_files())
+            except Exception:
+                return self._send(500, {"error": traceback.format_exc()})
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -632,6 +716,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, do_slice(req["model"], req.get("settings")))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
+            if self.path == "/api/files/delete":
+                return self._send(200, octo_delete(req["name"]))
+            if self.path == "/api/revert":
+                return self._send(200, revert_model(req["model"]))
             if self.path == "/api/import":
                 stem = save_import(req["name"], req["data"])
                 return self._send(200, {"model": stem})
