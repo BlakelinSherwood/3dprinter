@@ -54,13 +54,13 @@ const border = new THREE.LineLoop(
     new THREE.Vector3(-PLATE/2, -PLATE/2, 0), new THREE.Vector3(PLATE/2, -PLATE/2, 0),
     new THREE.Vector3(PLATE/2, PLATE/2, 0), new THREE.Vector3(-PLATE/2, PLATE/2, 0),
   ]),
-  new THREE.LineBasicMaterial({ color: 0xff7a45 })
+  new THREE.LineBasicMaterial({ color: 0x3b6ea5 })
 );
 scene.add(border);
 
 let mesh = null;
 const material = new THREE.MeshStandardMaterial({
-  color: 0xff9a62, metalness: 0.05, roughness: 0.55,
+  color: 0x7aa3cc, metalness: 0.05, roughness: 0.55,
 });
 
 function resize() {
@@ -100,6 +100,14 @@ function showSTL(url) {
 // ---------------------------- pipeline controls ----------------------------
 let models = [];
 const state = { generated: false, sliced: false };
+let rot = [0, 0, 0];
+
+function setRot(axis, delta) {
+  if (axis < 0) rot = [0, 0, 0];
+  else rot[axis] = (rot[axis] + delta) % 360;
+  $('rotval').textContent = rot.join('/');
+  if (!busy) doGenerate();
+}
 
 function setButtons() {
   $('slice').disabled = !state.generated;
@@ -112,14 +120,18 @@ function renderParams(model) {
   for (const p of model.params) {
     const field = document.createElement('div');
     field.className = 'field';
+    // ratios, angles and counts are not lengths - never unit-convert them
+    const unitless = /(ratio|angle|count|_num|num_)/.test(p.name);
     const label = document.createElement('label');
-    label.textContent = `${p.name} (${units})`;
+    label.textContent = unitless ? p.name : `${p.name} (${units})`;
     label.htmlFor = 'p_' + p.name;
     const input = document.createElement('input');
-    input.type = 'number'; input.step = units === 'in' ? '0.01' : '0.1';
+    input.type = 'number';
+    input.step = unitless ? '0.01' : (units === 'in' ? '0.01' : '0.1');
     input.id = 'p_' + p.name;
-    input.value = toDisplay(p.default);
+    input.value = unitless ? p.default : toDisplay(p.default);
     input.dataset.param = p.name; input.dataset.mm = p.default;
+    if (unitless) input.dataset.unitless = '1';
     field.append(label, input);
     box.appendChild(field);
   }
@@ -128,8 +140,36 @@ function renderParams(model) {
 function currentParams() {
   const out = {};
   for (const el of $('params').querySelectorAll('input[data-param]'))
-    out[el.dataset.param] = toMM(parseFloat(el.value));
+    out[el.dataset.param] = el.dataset.unitless
+      ? parseFloat(el.value) : toMM(parseFloat(el.value));
   return out;
+}
+
+function printSettings() {
+  return {
+    layer_height: $('ps_lh').value,
+    infill_pct: parseInt($('ps_infill').value) || 15,
+    supports: $('ps_supports').checked,
+    brim: $('ps_brim').checked,
+  };
+}
+try {
+  const ps = JSON.parse(localStorage.getItem('studio.printset'));
+  if (ps) {
+    $('ps_lh').value = ps.layer_height ?? '0.2';
+    $('ps_infill').value = ps.infill_pct ?? 15;
+    $('ps_supports').checked = !!ps.supports;
+    $('ps_brim').checked = !!ps.brim;
+  }
+} catch {}
+for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim']) {
+  $(id).onchange = () => {
+    try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
+    // settings changed: the previous slice no longer reflects them
+    state.sliced = false;
+    $('est').innerHTML = '';
+    setButtons();
+  };
 }
 
 $('units').textContent = units;
@@ -138,14 +178,43 @@ $('units').onclick = () => {
   const mmVals = currentParams();
   units = units === 'in' ? 'mm' : 'in';
   try { localStorage.setItem('studio.units', units); } catch {}
-  $('units').textContent = units;
+  function printSettings() {
+  return {
+    layer_height: $('ps_lh').value,
+    infill_pct: parseInt($('ps_infill').value) || 15,
+    supports: $('ps_supports').checked,
+    brim: $('ps_brim').checked,
+  };
+}
+try {
+  const ps = JSON.parse(localStorage.getItem('studio.printset'));
+  if (ps) {
+    $('ps_lh').value = ps.layer_height ?? '0.2';
+    $('ps_infill').value = ps.infill_pct ?? 15;
+    $('ps_supports').checked = !!ps.supports;
+    $('ps_brim').checked = !!ps.brim;
+  }
+} catch {}
+for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim']) {
+  $(id).onchange = () => {
+    try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
+    // settings changed: the previous slice no longer reflects them
+    state.sliced = false;
+    $('est').innerHTML = '';
+    setButtons();
+  };
+}
+
+$('units').textContent = units;
   for (const el of $('params').querySelectorAll('input[data-param]')) {
+    if (el.dataset.unitless) continue;
     el.value = toDisplay(mmVals[el.dataset.param]);
     el.step = units === 'in' ? '0.01' : '0.1';
   }
   for (const lab of $('params').querySelectorAll('label'))
     lab.textContent = lab.textContent.replace(/\((in|mm)\)$/, `(${units})`);
   if (lastResult) showResult(lastResult);
+  if (lastEst) $('est').innerHTML = fmtEst(lastEst);
 };
 
 async function api(path, body) {
@@ -245,6 +314,7 @@ async function doDescribe(mode) {
   try {
     const res = await api('/api/describe', { mode, model, description, image: photo });
     $('scale').value = 1;
+    rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
     showResult(res);
     state.generated = true; state.sliced = false;
@@ -260,7 +330,7 @@ async function doGenerate() {
   $('generate').disabled = true;
   log(`generate ${name} ` + JSON.stringify(currentParams()), 'dim');
   try {
-    const res = await api('/api/generate', { model: name, params: currentParams(), scale: $('scale').value || '1' });
+    const res = await api('/api/generate', { model: name, params: currentParams(), scale: $('scale').value || '1', rot });
     showResult(res);
     state.generated = true; state.sliced = false;
     log('STL ready', 'ok');
@@ -269,13 +339,35 @@ async function doGenerate() {
   setButtons();
 }
 
+let lastEst = null;
+function fmtEst(est) {
+  if (!est || (!est.time_text && !est.filament_g)) return '';
+  const parts = [];
+  if (est.time_text) parts.push(`<b>~${est.time_text}</b>`);
+  if (est.filament_g != null) {
+    parts.push(units === 'in'
+      ? `${(est.filament_g / 28.3495).toFixed(2)} oz`
+      : `${est.filament_g.toFixed(1)} g`);
+  }
+  if (est.filament_mm != null) {
+    parts.push(units === 'in'
+      ? `${(est.filament_mm / 304.8).toFixed(1)} ft filament`
+      : `${(est.filament_mm / 1000).toFixed(2)} m filament`);
+  }
+  return parts.join(' · ');
+}
+
 async function doSlice() {
   $('slice').disabled = true;
+  const settings = printSettings();
   log('slicing…', 'dim');
   try {
-    const res = await api('/api/slice', { model: $('model').value });
+    const res = await api('/api/slice', { model: $('model').value, settings });
+    if (res.overrides?.length) log('overrides: ' + res.overrides.join(', '), 'dim');
     log(res.report, res.ok ? 'ok' : 'bad');
     state.sliced = res.ok;
+    lastEst = res.estimates || null;
+    $('est').innerHTML = fmtEst(lastEst);
   } catch (e) { log(e.message, 'bad'); state.sliced = false; }
   setButtons();
 }
@@ -291,6 +383,10 @@ async function doUpload() {
 }
 
 $('generate').onclick = doGenerate;
+$('rotx').onclick = () => setRot(0, 90);
+$('roty').onclick = () => setRot(1, 90);
+$('rotz').onclick = () => setRot(2, 90);
+$('rotreset').onclick = () => setRot(-1, 0);
 $('buildnew').onclick = () => doDescribe('new');
 $('editsel').onclick = () => doDescribe('edit');
 $('slice').onclick = doSlice;
@@ -298,6 +394,7 @@ $('upload').onclick = doUpload;
 $('scale').onchange = () => { if (!busy) doGenerate(); };
 $('model').onchange = () => {
   $('scale').value = 1;
+  rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
   const m = models.find(x => x.name === $('model').value);
   renderParams(m);
   state.generated = state.sliced = false;

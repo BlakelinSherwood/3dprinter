@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Slice an STL to G-code with OrcaSlicer's CLI using the Ender 3 V2 profiles in this repo.
-# Usage: scripts/test-slice.sh [input.stl] [output_basename]
+# Usage: scripts/test-slice.sh [input.stl] [output_basename] [process_json]
+# The optional third argument swaps in an alternate process profile (used by
+# Part Studio for per-print overrides: layer height, infill, supports, brim).
 # OrcaSlicer's CLI exports a sliced .3mf; the plate G-code lives inside it at
 # Metadata/plate_1.gcode, so we unzip it out to get a plain .gcode for OctoPrint.
 set -euo pipefail
@@ -13,14 +15,27 @@ OUT_DIR="$REPO_DIR/output"
 mkdir -p "$OUT_DIR"
 
 PROF="$REPO_DIR/profiles/ender3v2"
+PROCESS="${3:-$PROF/process.json}"
 
+# Log to a file so real failure reasons (e.g. "floating regions, enable
+# supports") can be surfaced instead of Orca's bare "run found error".
+ORCA_LOG="$OUT_DIR/.orca-$BASE.log"
+rm -f "$ORCA_LOG"
+rc=0
 "$ORCA_BIN" \
-  --load-settings "$PROF/machine.json;$PROF/process.json" \
+  --load-settings "$PROF/machine.json;$PROCESS" \
   --load-filaments "$PROF/filament_pla.json" \
   --slice 0 \
-  --debug 1 \
+  --debug 4 \
+  --logfile "$ORCA_LOG" \
   --export-3mf "$OUT_DIR/$BASE.3mf" \
-  "$STL"
+  "$STL" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  echo "Slicer failed (exit $rc):" >&2
+  grep -E "message_type=[12]" "$ORCA_LOG" 2>/dev/null \
+    | sed -E 's/.*message=(.*), message_type=[12].*/  \1/' | sort -u | tail -5 >&2
+  exit "$rc"
+fi
 
 unzip -p "$OUT_DIR/$BASE.3mf" Metadata/plate_1.gcode > "$OUT_DIR/$BASE.gcode"
 

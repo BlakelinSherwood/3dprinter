@@ -158,8 +158,19 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   and warnings flag anything too big for 220×220×250, close to the plate
   edge, or too small to print (tiny bounding box, or estimated feature
   thickness under two perimeter widths).
+- **Rotate** turns the part in 90° steps about X/Y/Z (imports included) and
+  re-drops it onto the bed. Orientation drives strength, supports and finish.
+- **Print settings** override the profile per-slice: layer height
+  (0.12/0.16/0.2/0.28), infill %, tree supports, and a brim (auto-suggested
+  for tall parts with small footprints). Overrides are merged onto
+  `profiles/ender3v2/process.json` at slice time; the profile itself never
+  changes. Changing a setting re-locks Upload until the part is re-sliced.
 - **Slice + check** runs the normal `test-slice.sh` path; the safety report is
-  shown verbatim, and **Upload stays disabled unless the check passes**.
+  shown verbatim, and **Upload stays disabled unless the check passes**. After
+  a successful slice the panel shows the estimated print time and filament
+  use (oz/ft or g/m, following the units toggle). Slicer failures now surface
+  Orca's real reason (e.g. "floating regions - enable supports") instead of a
+  bare error.
 - **Upload** independently re-runs `check-gcode.py` on the file before sending
   it, and always uploads with `select=false&print=false`.
 - There is deliberately **no print button** — the server has no endpoint that

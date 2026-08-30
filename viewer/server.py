@@ -194,10 +194,40 @@ def save_import(name, data_b64):
     return stem
 
 
-def generate_import(name, scale, scale_label):
+def rotation_matrix(rot):
+    import numpy as np
+    rx, ry, rz = [math_radians(a) for a in rot]
+    cx, sx = np_cos_sin(rx)
+    cy, sy = np_cos_sin(ry)
+    cz, sz = np_cos_sin(rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return Rz @ Ry @ Rx
+
+
+def math_radians(deg):
+    import math
+    return math.radians(deg)
+
+
+def np_cos_sin(rad):
+    import math
+    return math.cos(rad), math.sin(rad)
+
+
+def norm_rot(rot):
+    rot = [float(a) % 360 for a in (rot or [0, 0, 0])]
+    return rot if any(rot) else None
+
+
+def generate_import(name, scale, scale_label, rot=None):
     import numpy as np
     tris = read_stl(IMPORTS / f"{name}.stl")
     warnings = [f"imported mesh - scale and slice only, no parameters"]
+    if rot:
+        tris = tris @ rotation_matrix(rot).T
+        warnings.append(f"rotated {'/'.join(f'{a:g}' for a in rot)} deg")
     if scale != 1.0:
         tris = tris * scale
         warnings.append(f"scaled {scale_label} = x{scale:g}")
@@ -213,6 +243,8 @@ def generate_import(name, scale, scale_label):
         warnings.append(f"TOO TALL for 250mm height: {dims[2]:.0f} - will not print")
     if min(dims) < 2.0:
         warnings.append(f"very small ({min(dims):.1f}mm min dimension) - unlikely to print")
+    if dims[2] > 30 and dims[2] > 2.5 * min(dims[0], dims[1]):
+        warnings.append("tall part with a small footprint - consider enabling Brim")
     OUTPUT.mkdir(exist_ok=True)
     write_stl(OUTPUT / f"{name}.stl", tris)
     return {
@@ -371,16 +403,17 @@ def parse_scale(value):
     return float(text), text
 
 
-def generate(name, params, scale=1.0):
+def generate(name, params, scale=1.0, rot=None):
     import cadquery as cq
     scale_f, scale_label = parse_scale(scale)
+    rot = norm_rot(rot)
     path = MODELS / f"{name}.py"
     if not path.is_file():
         if (IMPORTS / f"{name}.stl").is_file():
             if not 0.001 <= scale_f <= 100:
                 raise ValueError(f"scale {scale_label} outside 0.001-100")
             with _generate_lock:
-                return generate_import(name, scale_f, scale_label)
+                return generate_import(name, scale_f, scale_label, rot)
         raise FileNotFoundError(f"no such model: {name}")
     mod = load_model(path)
     kwargs = {k: float(v) for k, v in (params or {}).items()}
@@ -390,6 +423,12 @@ def generate(name, params, scale=1.0):
     warnings = []
     with _generate_lock:
         shape = as_shape(mod.build(**kwargs))
+        if rot:
+            axes = ((1, 0, 0), (0, 1, 0), (0, 0, 1))
+            for axis, ang in zip(axes, rot):
+                if ang:
+                    shape = shape.rotate(cq.Vector(0, 0, 0), cq.Vector(*axis), ang)
+            warnings.append(f"rotated {'/'.join(f'{a:g}' for a in rot)} deg")
         if scale != 1.0:
             shape = shape.scale(scale)
             warnings.append(f"scaled {scale_label} = x{scale:g} (params stay in real mm)")
@@ -410,6 +449,8 @@ def generate(name, params, scale=1.0):
         warnings.append("close to the plate edge - prefer <= 200mm in X/Y")
     if bb.zlen > PLATE_Z:
         warnings.append(f"TOO TALL for 250mm height: {bb.zlen:.0f} - will not print")
+    if bb.zlen > 30 and bb.zlen > 2.5 * min(bb.xlen, bb.ylen):
+        warnings.append("tall part with a small footprint - consider enabling Brim")
     # Too small: printability heuristics for a 0.4 nozzle.
     vol, area = shape.Volume(), shape.Area()
     if min(bb.xlen, bb.ylen, bb.zlen) < 2.0:
@@ -437,13 +478,99 @@ def run_script(args, timeout=600):
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
-def do_slice(name):
+SETTING_KEYS = {
+    "layer_height": {"0.12", "0.16", "0.2", "0.28"},
+    "infill_pct": None,     # 5-100
+    "supports": None,       # bool -> tree(auto)
+    "brim": None,           # bool -> outer_only 5mm
+}
+
+
+def build_process_override(settings):
+    """Merge per-print settings onto the repo process profile. Returns a path
+    to a temp process json, or None when everything is at profile defaults."""
+    if not settings:
+        return None
+    base = json.loads((REPO / "profiles/ender3v2/process.json").read_text())
+    changed = []
+    lh = str(settings.get("layer_height") or "").strip()
+    if lh and lh in SETTING_KEYS["layer_height"] and lh != str(base.get("layer_height")):
+        base["layer_height"] = lh
+        changed.append(f"layer {lh}mm")
+    infill = settings.get("infill_pct")
+    if infill is not None:
+        infill = max(0, min(100, int(infill)))
+        if f"{infill}%" != base.get("sparse_infill_density"):
+            base["sparse_infill_density"] = f"{infill}%"
+            changed.append(f"infill {infill}%")
+    if settings.get("supports"):
+        base["enable_support"] = "1"
+        base["support_type"] = "tree(auto)"
+        changed.append("tree supports")
+    if settings.get("brim"):
+        base["brim_type"] = "outer_only"
+        base["brim_width"] = "5"
+        changed.append("brim")
+    if not changed:
+        return None
+    base["name"] = base["name"] + " (override)"
+    OUTPUT.mkdir(exist_ok=True)
+    path = OUTPUT / "_process_override.json"
+    path.write_text(json.dumps(base, indent=2))
+    return path, changed
+
+
+EST_TIME_RE = re.compile(r";\s*(?:total\s+)?estimated printing time.*?=\s*(.+)", re.I)
+EST_G_RE = re.compile(r";\s*(?:total\s+)?filament used \[g\]\s*=\s*([\d.]+)", re.I)
+EST_MM_RE = re.compile(r";\s*(?:total\s+)?filament used \[mm\]\s*=\s*([\d.]+)", re.I)
+EST_CM3_RE = re.compile(r";\s*(?:total\s+)?filament used \[cm3\]\s*=\s*([\d.]+)", re.I)
+
+
+def parse_time_s(text):
+    total, m = 0, re.findall(r"(\d+)\s*([dhms])", text)
+    for num, unit in m:
+        total += int(num) * {"d": 86400, "h": 3600, "m": 60, "s": 1}[unit]
+    return total or None
+
+
+def gcode_estimates(gcode_path):
+    est = {}
+    try:
+        src = Path(gcode_path).read_text(errors="replace")
+        if m := EST_TIME_RE.search(src):
+            est["time_text"] = m.group(1).strip()
+            est["time_s"] = parse_time_s(m.group(1))
+        if m := EST_G_RE.search(src):
+            est["filament_g"] = float(m.group(1))
+        if m := EST_CM3_RE.search(src):
+            est["filament_cm3"] = float(m.group(1))
+        # Orca reports 0.00g when the filament profile carries no density;
+        # fall back to volume x PLA density (1.24 g/cm3).
+        if not est.get("filament_g") and est.get("filament_cm3"):
+            est["filament_g"] = round(est["filament_cm3"] * 1.24, 1)
+        if m := EST_MM_RE.search(src):
+            est["filament_mm"] = float(m.group(1))
+    except OSError:
+        pass
+    return est
+
+
+def do_slice(name, settings=None):
     stl = OUTPUT / f"{name}.stl"
     if not stl.is_file():
         raise FileNotFoundError("generate the STL first")
-    code, out = run_script([str(REPO / "scripts/test-slice.sh"), str(stl), name])
-    return {"ok": code == 0, "report": out,
-            "gcode": f"output/{name}.gcode" if code == 0 else None}
+    args = [str(REPO / "scripts/test-slice.sh"), str(stl), name]
+    override = build_process_override(settings)
+    changed = []
+    if override:
+        args.append(str(override[0]))
+        changed = override[1]
+    code, out = run_script(args)
+    result = {"ok": code == 0, "report": out, "overrides": changed,
+              "gcode": f"output/{name}.gcode" if code == 0 else None}
+    if code == 0:
+        result["estimates"] = gcode_estimates(OUTPUT / f"{name}.gcode")
+    return result
 
 
 def do_upload(name):
@@ -499,9 +626,10 @@ class Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/api/generate":
                 return self._send(200, generate(req["model"], req.get("params"),
-                                                req.get("scale", 1.0)))
+                                                req.get("scale", 1.0),
+                                                req.get("rot")))
             if self.path == "/api/slice":
-                return self._send(200, do_slice(req["model"]))
+                return self._send(200, do_slice(req["model"], req.get("settings")))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
             if self.path == "/api/import":

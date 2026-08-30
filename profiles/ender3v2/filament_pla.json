@@ -57,5 +57,11 @@
   "filament_max_volumetric_speed": [
     "12"
   ],
-  "inherits": "Creality Generic PLA"
+  "inherits": "Creality Generic PLA",
+  "filament_density": [
+    "1.24"
+  ],
+  "filament_cost": [
+    "20"
+  ]
 }
