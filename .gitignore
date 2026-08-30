@@ -4,3 +4,8 @@ output/
 .env
 .DS_Store
 00000.log
+.venv-cad/
+temp/
+*.stl
+!test-parts/*.stl
+__pycache__/

@@ -108,6 +108,55 @@ V2** with its bundled system presets, tweak to taste, then point `SLICER_PROFILE
 in `.mcp.json` (and the paths in `scripts/test-slice.sh`) at your saved user
 presets in `~/Library/Application Support/OrcaSlicer/user/default/`.
 
+## Modelling parts (CadQuery)
+
+Part models live in `models/` as small parametric CadQuery scripts. Each one
+takes an output path and prints its bounding box, so a part can be re-generated
+at a different size without editing the file:
+
+```bash
+scripts/setup-cad.sh                              # once: builds .venv-cad
+scripts/make-part.sh models/cable_clip.py         # default 5mm cable
+scripts/make-part.sh models/cable_clip.py 6.5     # 6.5mm cable
+```
+
+`make-part.sh` runs the whole chain — model → STL → slice → **safety check** →
+upload to OctoPrint — and never selects or starts a print. The safety check
+(`scripts/check-gcode.py`) exits non-zero on an out-of-range temperature or
+out-of-volume move, and because the script runs under `set -e`, an unsafe slice
+can never reach the upload step.
+
+CadQuery lives in its own `.venv-cad`, deliberately separate from
+`~/octoprint-venv`. Its dependencies are pinned in `scripts/requirements-cad.txt`
+and installed with `--no-deps`: resolving cadquery's full graph pulls in
+`numba` → `llvmlite`, which has no Python 3.13 wheel and fails to build from
+source. Nothing needs it at runtime.
+
+Design parts to print without supports where possible — flat face on the bed,
+overhangs under about 45°.
+
+## Part Studio (visual model editor)
+
+A local web UI over the same pipeline: pick a model, adjust its parameters,
+see the part in 3D on a 220×220 build plate, then slice and upload without
+leaving the browser.
+
+```bash
+scripts/studio.sh          # serves http://127.0.0.1:8434
+```
+
+- **Generate** re-runs the CadQuery model with the values in the form.
+- **Slice + check** runs the normal `test-slice.sh` path; the safety report is
+  shown verbatim, and **Upload stays disabled unless the check passes**.
+- **Upload** independently re-runs `check-gcode.py` on the file before sending
+  it, and always uploads with `select=false&print=false`.
+- There is deliberately **no print button** — the server has no endpoint that
+  can start a print.
+
+The UI is stdlib Python + a vendored Three.js (`viewer/`), so it needs no
+extra dependencies and works offline. Claude Code sessions can launch it via
+the `part-studio` entry in `.claude/launch.json`. It binds to 127.0.0.1 only.
+
 ## Manual pipeline (no MCP, for debugging)
 
 ```bash
