@@ -41,6 +41,14 @@
   }
   textarea:focus { outline: 1px solid var(--accent); }
   .warn { color: #ffb224; }
+  .hint { color: var(--dim); font-size: 11px; margin-top: 6px; }
+  #prog { margin-top: 10px; }
+  #progtrack { height: 5px; background: var(--edge); border-radius: 3px;
+    overflow: hidden; }
+  #progfill { height: 100%; width: 0%; background: var(--accent);
+    border-radius: 3px; transition: width .45s linear, background .3s; }
+  #progtext { color: var(--dim); font-size: 11px; margin-top: 5px;
+    font-variant-numeric: tabular-nums; }
   #photorow { align-items: center; margin-top: 8px; }
   #photobtn, #importbtn { flex: 0 0 auto; padding: 6px 10px; font-weight: 500; }
   #rotrow { align-items: center; }
@@ -137,6 +145,11 @@
       <div class="row">
         <button id="buildnew" class="primary">Build new</button>
         <button id="editsel">Edit selected</button>
+      </div>
+      <div class="hint">Enter builds new &middot; &#8984;Enter edits selected &middot; Shift+Enter for a new line</div>
+      <div id="prog" hidden>
+        <div id="progtrack"><div id="progfill"></div></div>
+        <div id="progtext"></div>
       </div>
       <label for="model">Model</label>
       <select id="model"></select>

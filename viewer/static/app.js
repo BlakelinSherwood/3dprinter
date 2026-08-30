@@ -336,6 +336,55 @@ function showResult(res) {
   for (const w of res.warnings || []) log('⚠ ' + w, 'warn');
 }
 
+// ---- progress bar with self-calibrating time estimates ----
+let progTimer = null, progStart = 0, progOp = null;
+function pastDurations() {
+  try { return JSON.parse(localStorage.getItem('studio.durations')) || {}; }
+  catch { return {}; }
+}
+function estimateFor(op, fallback) {
+  const a = pastDurations()[op];
+  if (!a || !a.length) return fallback;
+  const s = [...a].sort((x, y) => x - y);
+  return Math.round(s[Math.floor(s.length / 2)]);   // median of recent runs
+}
+function startProgress(op, label, fallback) {
+  clearInterval(progTimer);
+  progOp = op; progStart = Date.now();
+  const est = estimateFor(op, fallback);
+  $('prog').hidden = false;
+  $('progfill').style.background = 'var(--accent)';
+  $('progfill').style.width = '2%';
+  const tick = () => {
+    const el = Math.round((Date.now() - progStart) / 1000);
+    // crawl toward 96% against the estimate; never claim done early
+    $('progfill').style.width =
+      Math.min(96, Math.round(100 * el / Math.max(est, 1))) + '%';
+    $('progtext').textContent = el <= est
+      ? `${label} · ${el}s of ~${est}s`
+      : `${label} · ${el}s (usually ~${est}s — still working)`;
+  };
+  tick();
+  progTimer = setInterval(tick, 1000);
+}
+function endProgress(ok) {
+  clearInterval(progTimer);
+  if (progOp && ok) {
+    const secs = (Date.now() - progStart) / 1000;
+    const d = pastDurations();
+    (d[progOp] = d[progOp] || []).push(secs);
+    d[progOp] = d[progOp].slice(-5);
+    try { localStorage.setItem('studio.durations', JSON.stringify(d)); } catch {}
+  }
+  $('progfill').style.width = '100%';
+  $('progfill').style.background = ok ? 'var(--ok)' : 'var(--bad)';
+  $('progtext').textContent = ok
+    ? `done in ${Math.round((Date.now() - progStart) / 1000)}s`
+    : 'failed — see the log below';
+  progOp = null;
+  setTimeout(() => { if (!progOp) $('prog').hidden = true; }, ok ? 1800 : 5000);
+}
+
 let busy = false;
 function setBusy(b) {
   busy = b;
@@ -409,9 +458,13 @@ async function doDescribe(mode) {
   setBusy(true);
   log(mode === 'edit' ? `editing ${model}: ${description}` : `building: ${description}`, 'dim');
   if (photo) log(`with reference photo: ${photo.name}`, 'dim');
-  log('asking Claude — this can take a minute…', 'dim');
+  startProgress(mode === 'edit' ? 'describe_edit' : 'describe_new',
+                mode === 'edit' ? `editing ${model}` : 'building your part',
+                photo ? 100 : (mode === 'edit' ? 60 : 75));
+  let describeOk = false;
   try {
     const res = await api('/api/describe', { mode, model, description, image: photo });
+    describeOk = true;
     $('scale').value = 1;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
@@ -421,6 +474,7 @@ async function doDescribe(mode) {
     $('clearphoto').onclick && photo && $('clearphoto').onclick();
     log(`${res.model} ready` + (res.attempts > 1 ? ` (self-repaired after an error)` : ''), 'ok');
   } catch (e) { log(e.message, 'bad'); }
+  endProgress(describeOk);
   setBusy(false);
 }
 
@@ -460,14 +514,18 @@ async function doSlice() {
   $('slice').disabled = true;
   const settings = printSettings();
   log('slicing…', 'dim');
+  startProgress('slice', `slicing ${$('model').value}`, 35);
+  let sliceOk = false;
   try {
     const res = await api('/api/slice', { model: $('model').value, settings });
+    sliceOk = res.ok;
     if (res.overrides?.length) log('overrides: ' + res.overrides.join(', '), 'dim');
     log(res.report, res.ok ? 'ok' : 'bad');
     state.sliced = res.ok;
     lastEst = res.estimates || null;
     $('est').innerHTML = fmtEst(lastEst);
   } catch (e) { log(e.message, 'bad'); state.sliced = false; }
+  endProgress(sliceOk);
   setButtons();
 }
 
@@ -488,6 +546,12 @@ $('roty').onclick = () => setRot(1, 90);
 $('rotz').onclick = () => setRot(2, 90);
 $('rotreset').onclick = () => setRot(-1, 0);
 $('buildnew').onclick = () => doDescribe('new');
+$('desc').addEventListener('keydown', (e) => {
+  if (e.key !== 'Enter' || e.shiftKey) return;
+  e.preventDefault();
+  if (busy) return;
+  doDescribe(e.metaKey || e.ctrlKey ? 'edit' : 'new');
+});
 $('editsel').onclick = () => doDescribe('edit');
 $('slice').onclick = doSlice;
 $('upload').onclick = doUpload;
