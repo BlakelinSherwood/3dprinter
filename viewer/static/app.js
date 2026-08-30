@@ -3,6 +3,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 const $ = (id) => document.getElementById(id);
+
+// Units are a display layer only - models, STL and G-code are always mm.
+const MM_IN = 25.4;
+let units = 'in';
+try { units = localStorage.getItem('studio.units') || 'in'; } catch {}
+const toDisplay = (mm) => units === 'in' ? +(mm / MM_IN).toFixed(3) : mm;
+const toMM = (val) => units === 'in' ? val * MM_IN : val;
+const fmtLen = (mm) => units === 'in' ? `${(mm / MM_IN).toFixed(3)}"` : `${mm} mm`;
+const fmtVol = (cm3) => units === 'in'
+  ? `${(cm3 / 16.387).toFixed(2)} in³` : `${cm3} cm³`;
 const log = (msg, cls) => {
   const el = document.createElement('div');
   if (cls) el.className = cls;   // ok | bad | dim | warn
@@ -103,11 +113,13 @@ function renderParams(model) {
     const field = document.createElement('div');
     field.className = 'field';
     const label = document.createElement('label');
-    label.textContent = p.name + ' (mm)';
+    label.textContent = `${p.name} (${units})`;
     label.htmlFor = 'p_' + p.name;
     const input = document.createElement('input');
-    input.type = 'number'; input.step = '0.1'; input.id = 'p_' + p.name;
-    input.value = p.default; input.dataset.param = p.name;
+    input.type = 'number'; input.step = units === 'in' ? '0.01' : '0.1';
+    input.id = 'p_' + p.name;
+    input.value = toDisplay(p.default);
+    input.dataset.param = p.name; input.dataset.mm = p.default;
     field.append(label, input);
     box.appendChild(field);
   }
@@ -116,9 +128,25 @@ function renderParams(model) {
 function currentParams() {
   const out = {};
   for (const el of $('params').querySelectorAll('input[data-param]'))
-    out[el.dataset.param] = parseFloat(el.value);
+    out[el.dataset.param] = toMM(parseFloat(el.value));
   return out;
 }
+
+$('units').textContent = units;
+$('units').onclick = () => {
+  // convert visible inputs in place, then re-label
+  const mmVals = currentParams();
+  units = units === 'in' ? 'mm' : 'in';
+  try { localStorage.setItem('studio.units', units); } catch {}
+  $('units').textContent = units;
+  for (const el of $('params').querySelectorAll('input[data-param]')) {
+    el.value = toDisplay(mmVals[el.dataset.param]);
+    el.step = units === 'in' ? '0.01' : '0.1';
+  }
+  for (const lab of $('params').querySelectorAll('label'))
+    lab.textContent = lab.textContent.replace(/\((in|mm)\)$/, `(${units})`);
+  if (lastResult) showResult(lastResult);
+};
 
 async function api(path, body) {
   const r = await fetch(path, {
@@ -130,8 +158,10 @@ async function api(path, body) {
   return data;
 }
 
+let lastResult = null;
 function showResult(res) {
-  let html = `<b>${res.bbox[0]} × ${res.bbox[1]} × ${res.bbox[2]} mm</b> · ${res.volume_cm3} cm³`;
+  lastResult = res;
+  let html = `<b>${fmtLen(res.bbox[0])} × ${fmtLen(res.bbox[1])} × ${fmtLen(res.bbox[2])}</b> · ${fmtVol(res.volume_cm3)}`;
   for (const w of res.warnings || []) html += `<div class="warn">⚠ ${w}</div>`;
   $('stats').innerHTML = html;
   showSTL(res.stl);
@@ -160,6 +190,49 @@ async function refreshModels(selectName) {
   if (cur) renderParams(cur);
 }
 
+let photo = null;   // {name, data} base64 payload for /api/describe
+$('photobtn').onclick = () => $('photo').click();
+$('photo').onchange = () => {
+  const f = $('photo').files[0];
+  if (!f) return;
+  if (f.size > 10 * 1024 * 1024) { log('photo too large (10MB max)', 'bad'); return; }
+  const rd = new FileReader();
+  rd.onload = () => {
+    photo = { name: f.name, data: rd.result.split(',')[1] };
+    $('photoname').textContent = f.name;
+    $('clearphoto').hidden = false;
+  };
+  rd.readAsDataURL(f);
+};
+$('clearphoto').onclick = () => {
+  photo = null; $('photo').value = '';
+  $('photoname').textContent = 'no photo';
+  $('clearphoto').hidden = true;
+};
+
+$('importbtn').onclick = () => $('importfile').click();
+$('importfile').onchange = () => {
+  const f = $('importfile').files[0];
+  if (!f) return;
+  if (f.size > 60 * 1024 * 1024) { log('mesh too large (60MB max)', 'bad'); return; }
+  const rd = new FileReader();
+  rd.onload = async () => {
+    setBusy(true);
+    log(`importing ${f.name}…`, 'dim');
+    try {
+      const res = await api('/api/import',
+        { name: f.name, data: rd.result.split(',')[1] });
+      await refreshModels(res.model);
+      $('scale').value = 1;
+      await doGenerate();
+      log(`${res.model} imported`, 'ok');
+    } catch (e) { log(e.message, 'bad'); }
+    $('importfile').value = '';
+    setBusy(false);
+  };
+  rd.readAsDataURL(f);
+};
+
 async function doDescribe(mode) {
   const description = $('desc').value.trim();
   if (!description) { log('describe the part first', 'bad'); return; }
@@ -167,14 +240,16 @@ async function doDescribe(mode) {
   if (mode === 'edit' && !model) { log('no model selected to edit', 'bad'); return; }
   setBusy(true);
   log(mode === 'edit' ? `editing ${model}: ${description}` : `building: ${description}`, 'dim');
+  if (photo) log(`with reference photo: ${photo.name}`, 'dim');
   log('asking Claude — this can take a minute…', 'dim');
   try {
-    const res = await api('/api/describe', { mode, model, description });
+    const res = await api('/api/describe', { mode, model, description, image: photo });
     $('scale').value = 1;
     await refreshModels(res.model);
     showResult(res);
     state.generated = true; state.sliced = false;
     $('desc').value = '';
+    $('clearphoto').onclick && photo && $('clearphoto').onclick();
     log(`${res.model} ready` + (res.attempts > 1 ? ` (self-repaired after an error)` : ''), 'ok');
   } catch (e) { log(e.message, 'bad'); }
   setBusy(false);

@@ -10,3 +10,5 @@ temp/
 !test-parts/*.stl
 __pycache__/
 models/.history/
+uploads/
+models/imports/

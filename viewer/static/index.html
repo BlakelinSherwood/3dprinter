@@ -16,9 +16,9 @@
           border-right: 1px solid var(--edge); display: flex; flex-direction: column; }
   #side header { padding: 14px 16px; border-bottom: 1px solid var(--edge);
                  display: flex; align-items: center; justify-content: space-between; }
-  #popout { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 15px;
+  #popout, #units { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 13px;
             background: var(--bg); border: 1px solid var(--edge); color: var(--dim); }
-  #popout:hover { color: var(--text); border-color: var(--accent); }
+  #popout:hover, #units:hover { color: var(--text); border-color: var(--accent); }
   /* Floating mode: the panel becomes a draggable card over the viewport. */
   #side.float {
     position: fixed; z-index: 10; width: 340px; min-width: 0;
@@ -41,6 +41,11 @@
   }
   textarea:focus { outline: 1px solid var(--accent); }
   .warn { color: #ffb224; }
+  #photorow { align-items: center; margin-top: 8px; }
+  #photobtn, #importbtn { flex: 0 0 auto; padding: 6px 10px; font-weight: 500; }
+  #photoname { flex: 1; color: var(--dim); font-size: 12px; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  #clearphoto { flex: 0 0 26px; padding: 4px 0; }
   select, input[type=number] {
     width: 100%; padding: 7px 9px; background: var(--bg); color: var(--text);
     border: 1px solid var(--edge); border-radius: 6px; font: inherit;
@@ -77,11 +82,22 @@
         <h1>Part Studio</h1>
         <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250 &middot; PLA</div>
       </div>
-      <button id="popout" title="Pop the panel out so it can be dragged around">⇱</button>
+      <div style="display:flex; gap:6px">
+        <button id="units" title="Toggle inches / millimetres">in</button>
+        <button id="popout" title="Pop the panel out so it can be dragged around">⇱</button>
+      </div>
     </header>
     <div id="controls">
       <label for="desc">Describe it</label>
       <textarea id="desc" rows="3" placeholder="A new part (&quot;a headphone hook for a 18mm desk edge&quot;) or a change (&quot;make the hole 6mm&quot;)"></textarea>
+      <div class="row" id="photorow">
+        <button id="photobtn" title="Attach a reference photo">&#128247; photo</button>
+        <input type="file" id="photo" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+        <span id="photoname">no photo</span>
+        <button id="clearphoto" hidden title="Remove photo">&times;</button>
+        <button id="importbtn" title="Import an STL mesh (e.g. a photogrammetry scan)">&#8853; STL</button>
+        <input type="file" id="importfile" accept=".stl" hidden>
+      </div>
       <div class="row">
         <button id="buildnew" class="primary">Build new</button>
         <button id="editsel">Edit selected</button>

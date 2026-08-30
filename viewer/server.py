@@ -12,6 +12,7 @@ Serves a Three.js viewer and a small JSON API:
 Printing is deliberately absent: uploads are select=false/print=false via the
 existing script, and there is no endpoint that can start a print.
 """
+import base64
 import glob
 import importlib.util
 import inspect
@@ -97,10 +98,13 @@ OUTPUT_RULE = ("\nReply with ONLY the complete Python source file. "
                "No markdown fences, no commentary before or after.")
 
 
-def call_claude(prompt):
+def call_claude(prompt, allow_read=False):
     scratch = tempfile.mkdtemp(prefix="studio-codegen-")
+    cmd = [find_claude(), "-p", prompt, "--model", "sonnet", "--output-format", "text"]
+    if allow_read:   # let the CLI view an uploaded reference image
+        cmd += ["--allowedTools", "Read"]
     p = subprocess.run(
-        [find_claude(), "-p", prompt, "--model", "sonnet", "--output-format", "text"],
+        cmd,
         cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=420,
     )
     if p.returncode != 0:
@@ -128,13 +132,126 @@ def slugify(text):
     return "_".join(words) or "part"
 
 
-def describe(mode, name, description):
+IMAGE_EXTS = {".png": ".png", ".jpg": ".jpg", ".jpeg": ".jpg",
+              ".webp": ".webp", ".gif": ".gif"}
+
+IMPORTS = MODELS / "imports"
+
+
+def read_stl(path):
+    """Load an STL (binary or ASCII) as an (n,3,3) float array of triangles."""
+    import numpy as np
+    data = Path(path).read_bytes()
+    if len(data) >= 84:
+        n = int.from_bytes(data[80:84], "little")
+        if len(data) == 84 + 50 * n:   # well-formed binary STL
+            dt = np.dtype([("normal", "<f4", 3), ("v", "<f4", (3, 3)),
+                           ("attr", "<u2")])
+            rec = np.frombuffer(data, dtype=dt, count=n, offset=84)
+            return rec["v"].astype(np.float64).copy()
+    text = data.decode("ascii", errors="ignore")
+    verts = re.findall(
+        r"vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)", text)
+    if not verts or len(verts) % 3:
+        raise ValueError("not a valid STL file")
+    arr = np.array(verts, dtype=np.float64).reshape(-1, 3, 3)
+    return arr
+
+
+def write_stl(path, tris):
+    import numpy as np
+    n = len(tris)
+    dt = np.dtype([("normal", "<f4", 3), ("v", "<f4", (3, 3)), ("attr", "<u2")])
+    rec = np.zeros(n, dtype=dt)
+    a = tris[:, 1] - tris[:, 0]
+    b = tris[:, 2] - tris[:, 0]
+    nrm = np.cross(a, b)
+    lens = np.linalg.norm(nrm, axis=1, keepdims=True)
+    lens[lens == 0] = 1.0
+    rec["normal"] = (nrm / lens).astype(np.float32)
+    rec["v"] = tris.astype(np.float32)
+    with open(path, "wb") as f:
+        f.write(b"part-studio import".ljust(80, b"\0"))
+        f.write(n.to_bytes(4, "little"))
+        f.write(rec.tobytes())
+
+
+def mesh_volume(tris):
+    import numpy as np
+    v0, v1, v2 = tris[:, 0], tris[:, 1], tris[:, 2]
+    return abs(np.einsum("ij,ij->i", v0, np.cross(v1, v2)).sum()) / 6.0
+
+
+def save_import(name, data_b64):
+    data = base64.b64decode(data_b64)
+    if len(data) > 60 * 1024 * 1024:
+        raise ValueError("mesh too large (60MB max)")
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_") or "import"
+    IMPORTS.mkdir(parents=True, exist_ok=True)
+    path = IMPORTS / f"{stem}.stl"
+    path.write_bytes(data)
+    read_stl(path)   # validate now so a bad file fails at upload time
+    return stem
+
+
+def generate_import(name, scale, scale_label):
+    import numpy as np
+    tris = read_stl(IMPORTS / f"{name}.stl")
+    warnings = [f"imported mesh - scale and slice only, no parameters"]
+    if scale != 1.0:
+        tris = tris * scale
+        warnings.append(f"scaled {scale_label} = x{scale:g}")
+    zmin = tris[:, :, 2].min()
+    if abs(zmin) > 1e-4:
+        tris[:, :, 2] -= zmin
+    lo = tris.reshape(-1, 3).min(axis=0)
+    hi = tris.reshape(-1, 3).max(axis=0)
+    dims = hi - lo
+    if dims[0] > PLATE_X or dims[1] > PLATE_Y:
+        warnings.append(f"TOO BIG for the 220x220 plate: {dims[0]:.0f} x {dims[1]:.0f} - will not print")
+    if dims[2] > PLATE_Z:
+        warnings.append(f"TOO TALL for 250mm height: {dims[2]:.0f} - will not print")
+    if min(dims) < 2.0:
+        warnings.append(f"very small ({min(dims):.1f}mm min dimension) - unlikely to print")
+    OUTPUT.mkdir(exist_ok=True)
+    write_stl(OUTPUT / f"{name}.stl", tris)
+    return {
+        "stl": f"/output/{name}.stl",
+        "bbox": [round(float(d), 2) for d in dims],
+        "volume_cm3": round(mesh_volume(tris) / 1000.0, 2),
+        "scale": scale,
+        "scale_label": scale_label,
+        "warnings": warnings,
+    }
+
+
+def save_reference_image(image):
+    """Persist an uploaded reference photo for the codegen CLI to Read."""
+    data = base64.b64decode(image["data"])
+    if len(data) > 10 * 1024 * 1024:
+        raise ValueError("image too large (10MB max)")
+    ext = IMAGE_EXTS.get(Path(image.get("name", "photo.png")).suffix.lower())
+    if not ext:
+        raise ValueError("unsupported image type (png/jpg/webp/gif)")
+    uploads = REPO / "uploads"
+    uploads.mkdir(exist_ok=True)
+    path = uploads / f"ref-{int(time.time())}{ext}"
+    path.write_bytes(data)
+    return path
+
+
+def describe(mode, name, description, image=None):
     """Natural-language build/edit. Writes models/<name>.py after validating
     that the generated file actually loads and builds."""
     rules = design_rules()
+    image_path = save_reference_image(image) if image else None
     if mode == "edit":
         path = MODELS / f"{name}.py"
         if not path.is_file():
+            if (IMPORTS / f"{name}.stl").is_file():
+                raise ValueError(
+                    "imported meshes have no editable source - use scale, or "
+                    "describe a new part instead")
             raise FileNotFoundError(f"no such model: {name}")
         original = path.read_text()
         task = (f"Modify this existing model per the request below. Keep the same "
@@ -145,13 +262,24 @@ def describe(mode, name, description):
         original = None
         task = f"Write a new model for this request: {description}"
 
+    if image_path:
+        task += (f"\n\nReference photo: the user uploaded an image at "
+                 f"{image_path}. Use the Read tool to view it FIRST. Design a "
+                 f"printable interpretation of the pictured object or shape - "
+                 f"match its proportions and character, simplified for FDM "
+                 f"printing. Dimensions in the text description take "
+                 f"precedence; otherwise pick sensible sizes in mm.")
+
+    task += ("\n\nIf the request gives dimensions in inches or fractions "
+             "(1/4\", 2in), convert to millimetres (25.4 mm per inch) - the "
+             "code and all parameters stay in mm.")
     prompt = (MODEL_CONTRACT + "\n# Printer design rules (mandatory)\n" + rules
               + "\n# Task\n" + task + OUTPUT_RULE)
 
     with _codegen_lock:
         last_err = None
         for attempt in (1, 2):
-            reply = call_claude(prompt)
+            reply = call_claude(prompt, allow_read=image_path is not None)
             code = extract_code(reply)
             if mode == "edit":
                 out_name = name
@@ -209,6 +337,9 @@ def as_shape(obj):
 
 def list_models():
     items = []
+    for f in sorted(IMPORTS.glob("*.stl")) if IMPORTS.is_dir() else []:
+        items.append({"name": f.stem, "summary": "imported mesh",
+                      "params": [], "imported": True})
     for f in sorted(MODELS.glob("*.py")):
         try:
             mod = load_model(f)
@@ -242,12 +373,18 @@ def parse_scale(value):
 
 def generate(name, params, scale=1.0):
     import cadquery as cq
+    scale_f, scale_label = parse_scale(scale)
     path = MODELS / f"{name}.py"
     if not path.is_file():
+        if (IMPORTS / f"{name}.stl").is_file():
+            if not 0.001 <= scale_f <= 100:
+                raise ValueError(f"scale {scale_label} outside 0.001-100")
+            with _generate_lock:
+                return generate_import(name, scale_f, scale_label)
         raise FileNotFoundError(f"no such model: {name}")
     mod = load_model(path)
     kwargs = {k: float(v) for k, v in (params or {}).items()}
-    scale, scale_label = parse_scale(scale)
+    scale, scale_label = scale_f, scale_label
     if not 0.001 <= scale <= 100:
         raise ValueError(f"scale {scale_label} ({scale:g}) outside 0.001-100")
     warnings = []
@@ -367,9 +504,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, do_slice(req["model"]))
             if self.path == "/api/upload":
                 return self._send(200, do_upload(req["model"]))
+            if self.path == "/api/import":
+                stem = save_import(req["name"], req["data"])
+                return self._send(200, {"model": stem})
             if self.path == "/api/describe":
                 return self._send(200, describe(
-                    req.get("mode", "new"), req.get("model"), req["description"]))
+                    req.get("mode", "new"), req.get("model"), req["description"],
+                    req.get("image")))
             return self._send(404, {"error": "not found"})
         except Exception:
             return self._send(500, {"error": traceback.format_exc()})
