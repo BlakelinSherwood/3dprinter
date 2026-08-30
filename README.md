@@ -91,6 +91,11 @@ layers, 3 walls, 15% grid infill, conservative speeds; filament = generic PLA at
 210/60°C). They are a sensible starting point, **but watch the first layer of
 your first print closely**.
 
+`.mcp.json` must point the MCP server at **both** the machine and process
+profiles (`SLICER_PROFILE`, joined with `;`) plus the filament profile
+(`FILAMENT_PROFILE`). Passing only a process profile makes `slice_stl` fail with
+a bare "Slicer failed" — OrcaSlicer needs a machine profile to slice at all.
+
 Preferred long-term path: open OrcaSlicer once, add printer **Creality Ender-3
 V2** with its bundled system presets, tweak to taste, then point `SLICER_PROFILE`
 in `.mcp.json` (and the paths in `scripts/test-slice.sh`) at your saved user

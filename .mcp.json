@@ -2,7 +2,10 @@
   "mcpServers": {
     "3dprint": {
       "command": "npx",
-      "args": ["-y", "mcp-3d-printer-server"],
+      "args": [
+        "-y",
+        "mcp-3d-printer-server"
+      ],
       "env": {
         "PRINTER_TYPE": "octoprint",
         "PRINTER_HOST": "127.0.0.1",
@@ -10,7 +13,8 @@
         "API_KEY": "${OCTOPRINT_API_KEY}",
         "SLICER_TYPE": "orcaslicer",
         "SLICER_PATH": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
-        "SLICER_PROFILE": "${HOME}/3dprinter/profiles/ender3v2/process.json"
+        "SLICER_PROFILE": "${HOME}/3dprinter/profiles/ender3v2/machine.json;${HOME}/3dprinter/profiles/ender3v2/process.json",
+        "FILAMENT_PROFILE": "${HOME}/3dprinter/profiles/ender3v2/filament_pla.json"
       }
     }
   }
