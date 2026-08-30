@@ -1,0 +1,5 @@
+output/
+*.gcode
+*.3mf
+.env
+.DS_Store

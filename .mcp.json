@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "3dprint": {
+      "command": "npx",
+      "args": ["-y", "mcp-3d-printer-server"],
+      "env": {
+        "PRINTER_TYPE": "octoprint",
+        "PRINTER_HOST": "127.0.0.1",
+        "PRINTER_PORT": "5001",
+        "API_KEY": "${OCTOPRINT_API_KEY}",
+        "SLICER_TYPE": "orcaslicer",
+        "SLICER_PATH": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
+        "SLICER_PROFILE": "${HOME}/3d-printer-pipeline/profiles/ender3v2/process.json"
+      }
+    }
+  }
+}
