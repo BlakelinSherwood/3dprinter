@@ -53,6 +53,13 @@ plus STL utilities (`scale_stl`, `rotate_stl`, `center_model`, `lay_flat`, …).
 > Claude runs *on the Mac itself* (Claude Code CLI/desktop, or Claude Desktop).
 > A cloud/remote Claude session cannot reach your Mac's localhost.
 
+## Handing off to a local Claude session
+
+Claude must run **on the Mac** for any of this to work (it needs localhost:5001,
+/Applications/OrcaSlicer.app, and the USB port). A ready-to-paste prompt that
+brings a fresh local session fully up to speed lives in
+[docs/local-claude-prompt.md](docs/local-claude-prompt.md).
+
 ## Getting an OctoPrint API key
 
 1. Open http://127.0.0.1:5001 and log in.
