@@ -14,7 +14,21 @@
          font: 14px/1.45 system-ui, -apple-system, sans-serif; }
   #side { width: 320px; min-width: 320px; background: var(--panel);
           border-right: 1px solid var(--edge); display: flex; flex-direction: column; }
-  #side header { padding: 14px 16px; border-bottom: 1px solid var(--edge); }
+  #side header { padding: 14px 16px; border-bottom: 1px solid var(--edge);
+                 display: flex; align-items: center; justify-content: space-between; }
+  #popout { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 15px;
+            background: var(--bg); border: 1px solid var(--edge); color: var(--dim); }
+  #popout:hover { color: var(--text); border-color: var(--accent); }
+  /* Floating mode: the panel becomes a draggable card over the viewport. */
+  #side.float {
+    position: fixed; z-index: 10; width: 340px; min-width: 0;
+    max-height: calc(100vh - 24px); border: 1px solid var(--edge);
+    border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55);
+    background: rgba(28, 31, 38, .92); backdrop-filter: blur(10px);
+  }
+  #side.float #grab { cursor: grab; user-select: none; touch-action: none; }
+  #side.float #grab:active { cursor: grabbing; }
+  #side.float #log { height: 110px; }
   #side header h1 { font-size: 16px; }
   #side header .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
   #controls { padding: 14px 16px; overflow-y: auto; flex: 1; }
@@ -58,9 +72,12 @@
 </head>
 <body>
   <div id="side">
-    <header>
-      <h1>Part Studio</h1>
-      <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250 &middot; PLA</div>
+    <header id="grab">
+      <div>
+        <h1>Part Studio</h1>
+        <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250 &middot; PLA</div>
+      </div>
+      <button id="popout" title="Pop the panel out so it can be dragged around">⇱</button>
     </header>
     <div id="controls">
       <label for="desc">Describe it</label>

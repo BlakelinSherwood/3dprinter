@@ -230,6 +230,74 @@ $('model').onchange = () => {
   doGenerate();
 };
 
+// ---------------------------- floating panel ----------------------------
+const side = document.getElementById('side');
+const grab = document.getElementById('grab');
+const popBtn = document.getElementById('popout');
+
+function panelState() {
+  try { return JSON.parse(localStorage.getItem('studio.panel')) || {}; }
+  catch { return {}; }
+}
+function savePanel(st) {
+  try { localStorage.setItem('studio.panel', JSON.stringify(st)); } catch {}
+}
+function clampPos(x, y) {
+  const w = side.offsetWidth || 340, h = Math.min(side.offsetHeight || 400, 200);
+  x = Math.min(Math.max(0, x), innerWidth - w);
+  y = Math.min(Math.max(0, y), innerHeight - h);
+  // Keep the card inside the window: shrink it as it nears the bottom edge.
+  side.style.maxHeight = Math.max(220, innerHeight - y - 12) + 'px';
+  return [x, y];
+}
+function setFloat(on, x = 24, y = 24) {
+  side.classList.toggle('float', on);
+  if (on) {
+    [x, y] = clampPos(x, y);
+    side.style.left = x + 'px';
+    side.style.top = y + 'px';
+  } else {
+    side.style.left = side.style.top = '';
+    side.style.maxHeight = '';
+  }
+  popBtn.textContent = on ? '⇲' : '⇱';
+  popBtn.title = on ? 'Dock the panel back to the side'
+                    : 'Pop the panel out so it can be dragged around';
+  resize();
+  savePanel({ float: on, x, y });
+}
+popBtn.onclick = () => {
+  const st = panelState();
+  setFloat(!side.classList.contains('float'), st.x ?? 24, st.y ?? 24);
+};
+grab.addEventListener('pointerdown', (e) => {
+  if (!side.classList.contains('float') || e.target.closest('button')) return;
+  const startX = e.clientX - side.offsetLeft;
+  const startY = e.clientY - side.offsetTop;
+  grab.setPointerCapture(e.pointerId);
+  const move = (ev) => {
+    const [x, y] = clampPos(ev.clientX - startX, ev.clientY - startY);
+    side.style.left = x + 'px';
+    side.style.top = y + 'px';
+  };
+  const up = () => {
+    grab.removeEventListener('pointermove', move);
+    grab.removeEventListener('pointerup', up);
+    savePanel({ float: true, x: side.offsetLeft, y: side.offsetTop });
+  };
+  grab.addEventListener('pointermove', move);
+  grab.addEventListener('pointerup', up);
+});
+window.addEventListener('resize', () => {
+  if (side.classList.contains('float'))
+    [side.style.left, side.style.top] =
+      clampPos(side.offsetLeft, side.offsetTop).map(v => v + 'px');
+});
+{
+  const st = panelState();
+  if (st.float) setFloat(true, st.x, st.y);
+}
+
 (async function init() {
   models = await (await fetch('/api/models')).json();
   for (const m of models) {
