@@ -359,6 +359,14 @@ if __name__ == "__main__":
 - The mesh's own coordinates are what the user sees; probe nothing, trust the
   stated coordinates. Keep tools generously sized (extend cuts a few mm past
   surfaces) so booleans are robust.
+- Splitting and joints, all from _meshlib:
+  * split_plane(mesh, point, normal) -> (kept, removed): capped watertight
+    halves. Use for turret rings, hull sections, wing joints.
+  * peg(diameter, length) -> cylinder tool: union for the peg, and subtract
+    peg(d, l, clearance=0.4) for a free-spinning socket (0.2 for snap-fit).
+    Position with .apply_translation([x, y, z]).
+  * parts(a, b, ...) -> lays the pieces side by side on the plate as ONE
+    printable set; return it from build() when the edit splits the model.
 - CRITICAL: cq extrude() goes along the workplane NORMAL - "XY" extrudes
   toward +Z, "XZ" toward -Y, "YZ" toward +X. The safest pattern is to build
   every tool on Workplane("XY") at the origin and move it into place with
@@ -1170,6 +1178,139 @@ def import_url(url):
                      ".stl file")
 
 
+BLENDER = "/Applications/Blender.app/Contents/MacOS/Blender"
+
+
+def make_printable(name, voxel=0.8, target_mm=0.0):
+    """Run the headless Blender solidify job on an import; produces a new
+    import named <name>_solid with attribution carried over."""
+    src = IMPORTS / f"{name}.stl"
+    if not src.is_file():
+        raise ValueError("make printable runs on imported meshes - select an import")
+    if not Path(BLENDER).is_file():
+        raise RuntimeError("Blender not found at /Applications/Blender.app - "
+                           "install it with: brew install --cask blender")
+    out_name = f"{name}_solid"
+    dst = IMPORTS / f"{out_name}.stl"
+    job = REPO / "scripts/bpy_make_printable.py"
+    p = subprocess.run(
+        [BLENDER, "--background", "--python", str(job), "--",
+         str(src), str(dst), str(voxel), "0.5", str(target_mm or 0)],
+        capture_output=True, text=True, timeout=600)
+    marker = [l for l in p.stdout.splitlines() if l.startswith("BPY_RESULT")]
+    if p.returncode != 0 or not dst.is_file() or not marker:
+        raise RuntimeError("Blender job failed:\n" + (p.stdout + p.stderr)[-600:])
+    att_src = IMPORTS / f"{name}.json"
+    att = json.loads(att_src.read_text()) if att_src.is_file() else {}
+    att["processed"] = f"voxel remesh {voxel}mm" + (f", scaled to {target_mm}mm" if target_mm else "")
+    (IMPORTS / f"{out_name}.json").write_text(json.dumps(att, indent=2))
+    result = generate(out_name, {})
+    result["model"] = out_name
+    result["bpy"] = marker[0]
+    return result
+
+
+# ---- AI image/text -> 3D (Tripo or Meshy; key arrives via ~/.zshrc) ----
+def gen3d_provider():
+    if os.environ.get("TRIPO_API_KEY"):
+        return "tripo"
+    if os.environ.get("MESHY_API_KEY"):
+        return "meshy"
+    return None
+
+
+def gen3d_config():
+    p = gen3d_provider()
+    return {"provider": p,
+            "hint": None if p else ("no key configured - add TRIPO_API_KEY or "
+                                    "MESHY_API_KEY to ~/.zshrc and restart the studio")}
+
+
+def _gen3d_poll(url, headers, done_key, status_path, interval=6, budget=900):
+    waited = 0
+    while waited < budget:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            d = json.load(r)
+        node = d
+        for k in status_path[:-1]:
+            node = node.get(k, {})
+        status = node.get(status_path[-1], "")
+        if status in ("success", "SUCCEEDED", "completed"):
+            return d
+        if status in ("failed", "FAILED", "cancelled", "expired"):
+            raise RuntimeError(f"generation failed: {json.dumps(d)[:300]}")
+        time.sleep(interval)
+        waited += interval
+    raise RuntimeError("3D generation timed out after 15 minutes")
+
+
+def gen3d(image_b64=None, image_name=None, prompt=None):
+    """Photo (or text) -> mesh via the configured provider -> import."""
+    provider = gen3d_provider()
+    if not provider:
+        raise RuntimeError(gen3d_config()["hint"])
+    if provider == "tripo":
+        key = os.environ["TRIPO_API_KEY"]
+        H = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        if image_b64:
+            ext = (Path(image_name or "img.png").suffix or ".png").lstrip(".")
+            body = {"type": "image_to_model",
+                    "file": {"type": ext, "data": image_b64}}
+        else:
+            body = {"type": "text_to_model", "prompt": prompt or ""}
+        req = urllib.request.Request("https://api.tripo3d.ai/v2/openapi/task",
+                                     data=json.dumps(body).encode(), headers=H)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            task = json.load(r)["data"]["task_id"]
+        done = _gen3d_poll(f"https://api.tripo3d.ai/v2/openapi/task/{task}", H,
+                           "success", ["data", "status"])
+        url = (done["data"].get("output", {}).get("pbr_model")
+               or done["data"].get("output", {}).get("model"))
+    else:   # meshy
+        key = os.environ["MESHY_API_KEY"]
+        H = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        if image_b64:
+            body = {"image_url": f"data:image/png;base64,{image_b64}",
+                    "should_remesh": True}
+            ep = "https://api.meshy.ai/openapi/v1/image-to-3d"
+        else:
+            body = {"mode": "preview", "prompt": prompt or "", "art_style": "realistic"}
+            ep = "https://api.meshy.ai/openapi/v2/text-to-3d"
+        req = urllib.request.Request(ep, data=json.dumps(body).encode(), headers=H)
+        with urllib.request.urlopen(req, timeout=60) as r:
+            task = json.load(r)["result"]
+        base = ep.rsplit("/", 1)[0] + ("/image-to-3d" if image_b64 else "/text-to-3d")
+        done = _gen3d_poll(f"{base}/{task}", H, "SUCCEEDED", ["status"])
+        url = (done.get("model_urls") or {}).get("glb")
+    if not url:
+        raise RuntimeError("provider returned no model url")
+    raw = http_download(url)
+    tmp = OUTPUT / "_gen3d_download"
+    suffix = ".glb" if ".glb" in url.split("?")[0] else ".stl"
+    tmp_file = tmp.with_suffix(suffix)
+    tmp_file.write_bytes(raw)
+    if suffix == ".glb":   # convert to STL via trimesh
+        import trimesh
+        scene = trimesh.load(str(tmp_file))
+        mesh = scene.dump(concatenate=True) if isinstance(scene, trimesh.Scene) else scene
+        stem_src = prompt or Path(image_name or "generated").stem
+        stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", stem_src).strip("_")[:30] or "generated"
+        out = IMPORTS / f"{stem}.stl"
+        IMPORTS.mkdir(parents=True, exist_ok=True)
+        mesh.export(str(out))
+    else:
+        stem = save_import((prompt or image_name or "generated") + ".stl",
+                           base64.b64encode(raw).decode())
+        out = IMPORTS / f"{stem}.stl"
+    (IMPORTS / f"{out.stem}.json").write_text(json.dumps(
+        {"title": prompt or image_name, "source": f"AI generated ({provider})",
+         "license": "check provider terms"}, indent=2))
+    result = generate(out.stem, {})
+    result["model"] = out.stem
+    return result
+
+
 OCTO_URL = os.environ.get("OCTO_URL", "http://127.0.0.1:5001")
 
 
@@ -1286,6 +1427,8 @@ class Handler(BaseHTTPRequestHandler):
                 # deliver once, then forget
                 _jobs.pop(jid, None)
             return self._send(200, out)
+        if route == "/api/gen3d_config":
+            return self._send(200, gen3d_config())
         if route == "/api/material_custom":
             return self._send(200, custom_material_meta() or {})
         if route == "/api/printer":
@@ -1324,6 +1467,15 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/refine":
                 return self._send(200, start_job(
                     refine, req["model"], req.get("notes")))
+            if self.path == "/api/make_printable":
+                return self._send(200, start_job(
+                    make_printable, req["model"],
+                    float(req.get("voxel") or 0.8),
+                    float(req.get("target_mm") or 0)))
+            if self.path == "/api/gen3d":
+                return self._send(200, start_job(
+                    gen3d, req.get("image"), req.get("image_name"),
+                    req.get("prompt")))
             if self.path == "/api/revert":
                 return self._send(200, revert_model(req["model"]))
             if self.path == "/api/import":

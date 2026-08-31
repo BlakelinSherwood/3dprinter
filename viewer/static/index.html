@@ -118,8 +118,12 @@
     padding: 12px 14px; border-bottom: 1px solid var(--edge); }
   #finderhead .sub { flex: 1; color: var(--dim); font-size: 11px; }
   #finderhead button { flex: 0 0 28px; padding: 3px 0; }
-  #finderquery, #finderurl { padding: 10px 14px; margin: 0; }
-  #finderurl { border-top: 1px solid var(--edge); }
+  #finderquery, #finderurl, #finderai { padding: 10px 14px; margin: 0; }
+  #finderurl, #finderai { border-top: 1px solid var(--edge); }
+  #finderai input[type=text] { padding: 7px 9px; background: var(--bg);
+    color: var(--text); border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
+  #finderai button { flex: 0 0 auto; padding: 6px 10px; }
+  #finderai.nokey { opacity: .45; }
   #finderquery input, #finderurl input {
     flex: 1; padding: 7px 9px; background: var(--bg); color: var(--text);
     border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
@@ -201,6 +205,7 @@
       <div class="row" id="modelrow">
         <button id="revert" title="Swap in the previous saved version of this model (press again to switch back)" disabled>&#8617; undo</button>
         <button id="refine" title="Render the model, show it to the generator, and have it rewrite itself with richer detail">&#10024; refine</button>
+        <button id="makeprint" hidden title="Blender voxel-remesh: turn this import into one watertight printable solid">&#9881; make printable</button>
         <a id="dl" class="btnlink" download title="Download the generated STL">&#8595; STL</a>
       </div>
       <div id="params"></div>
@@ -284,6 +289,12 @@
       <button id="fgo" class="primary" style="flex:0 0 70px">Search</button>
     </div>
     <div id="fresults"></div>
+    <div class="row" id="finderai">
+      <button id="aiphoto" title="Generate a 3D model from a photo">&#128247;&#8594;3D</button>
+      <input type="file" id="aifile" accept="image/png,image/jpeg,image/webp" hidden>
+      <input type="text" id="aiprompt" placeholder="or describe it (AI text&#8594;3D)&hellip;" spellcheck="false" style="flex:1">
+      <button id="aigo" style="flex:0 0 60px">Gen</button>
+    </div>
     <div class="row" id="finderurl">
       <input type="text" id="furl" placeholder="or paste a printables.com model URL / direct .stl URL" spellcheck="false">
       <button id="furlgo" style="flex:0 0 70px">Import</button>

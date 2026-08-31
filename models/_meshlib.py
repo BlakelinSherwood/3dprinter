@@ -67,3 +67,39 @@ def union(mesh, *tools):
 
 def intersection(mesh, *tools):
     return _boolean("intersection", mesh, *tools)
+
+
+def parts(*meshes, gap=8.0):
+    """Lay several bodies side by side on the plate as one printable set.
+    Use after splitting a model: return parts(hull, turret, wheels...)."""
+    import numpy as np
+    import trimesh
+    placed = []
+    x = 0.0
+    for m in meshes:
+        m = m.copy()
+        lo, hi = m.bounds
+        m.apply_translation([x - lo[0], -lo[1], -lo[2]])
+        x += (hi[0] - lo[0]) + gap
+        placed.append(m)
+    return trimesh.util.concatenate(placed)
+
+
+def split_plane(mesh, point, normal):
+    """Cut a mesh into (kept, removed) halves along a plane. Both halves are
+    capped watertight. point/normal are in the mesh's own coordinates."""
+    import numpy as np
+    import trimesh
+    n = np.asarray(normal, dtype=float)
+    n /= (np.linalg.norm(n) or 1)
+    a = mesh.slice_plane(point, n, cap=True)
+    b = mesh.slice_plane(point, -n, cap=True)
+    return a, b
+
+
+def peg(diameter=8.0, length=10.0, clearance=0.0):
+    """A cylinder tool for rotation pegs / alignment pins. Positive clearance
+    makes the SOCKET version (subtract it); zero makes the peg (union it)."""
+    import trimesh
+    return trimesh.creation.cylinder(radius=(diameter + clearance) / 2.0,
+                                     height=length, sections=48)

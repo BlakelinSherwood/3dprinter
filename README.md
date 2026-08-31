@@ -214,6 +214,17 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   files on the printer with per-file delete. Both are read-only against the
   printer - delete is the only mutation, and it never touches a selected or
   printing file (OctoPrint refuses, and the refusal is shown).
+- **make printable** (imports only) runs headless Blender: voxel remesh to
+  one watertight solid + decimate, producing `<name>_solid`. This is the
+  step that turns visual meshes (Sketchfab-style, AI-generated) into
+  printable geometry. Requires Blender (`brew install --cask blender`).
+- **AI 3D lane** in the finder: a photo or a text prompt generates a mesh
+  via Tripo or Meshy and imports it (attribution marked AI-generated). Add
+  `TRIPO_API_KEY` or `MESHY_API_KEY` to `~/.zshrc` and restart the studio;
+  until then the row is dimmed with a hint. Mesh edits can now also SPLIT
+  models: `_meshlib.split_plane` (capped halves), `peg` (pegs and matching
+  clearance sockets), and `parts` (plate layout of a multi-piece set) - the
+  toy-conversion primitives from docs/toy-conversion-roadmap.md.
 - **undo edit** swaps the selected model with its most recent saved version
   from `models/.history/` - pressing it again swaps back, so no version is
   ever lost. **&#8595; STL** downloads the currently generated STL.

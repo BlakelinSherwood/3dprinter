@@ -1029,6 +1029,53 @@ async function loadQueue() {
     }
   } catch (e) { $('qcount').textContent = '?'; }
 }
+(async () => {
+  try {
+    const cfg = await (await fetch('/api/gen3d_config')).json();
+    if (!cfg.provider) {
+      $('finderai').classList.add('nokey');
+      $('finderai').title = cfg.hint;
+      $('aiprompt').placeholder = 'AI 3D: add TRIPO_API_KEY or MESHY_API_KEY to ~/.zshrc';
+    } else {
+      $('aiprompt').placeholder = `AI ${cfg.provider}: describe it, or use the photo button…`;
+    }
+  } catch {}
+})();
+
+let aiphotoData = null;
+$('aiphoto').onclick = () => $('aifile').click();
+$('aifile').onchange = () => {
+  const f = $('aifile').files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    aiphotoData = { data: rd.result.split(',')[1], name: f.name };
+    $('aiphoto').textContent = '📷 ' + f.name.slice(0, 12);
+  };
+  rd.readAsDataURL(f);
+};
+$('aigo').onclick = async () => {
+  const prompt = $('aiprompt').value.trim();
+  if (!aiphotoData && !prompt) { log('pick a photo or type a description for AI 3D', 'bad'); return; }
+  setBusy(true);
+  log(`AI 3D generation: ${aiphotoData ? aiphotoData.name : prompt}…`, 'dim');
+  startProgress('gen3d', 'generating 3D model (provider side)', 240);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/gen3d', {
+      image: aiphotoData?.data, image_name: aiphotoData?.name, prompt: prompt || null });
+    ok = true;
+    $('finder').hidden = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true; state.sliced = false;
+    log(`${res.model} imported from AI generation — try ⚙ make printable next`, 'ok');
+    aiphotoData = null; $('aiphoto').textContent = '📷→3D';
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
 $('queue').addEventListener('toggle', () => { if ($('queue').open) loadQueue(); });
 loadQueue();   // count badge on load
 
@@ -1036,6 +1083,7 @@ loadQueue();   // count badge on load
 function syncModelRow() {
   const m = models.find(x => x.name === $('model').value);
   $('revert').disabled = !(m && m.has_history);
+  $('makeprint').hidden = !(m && m.imported);
   const dl = $('dl');
   if (state.generated && m) {
     dl.href = `/output/${m.name}.stl`;
@@ -1063,6 +1111,24 @@ $('refine').onclick = async () => {
     showResult(res);
     state.generated = true; state.sliced = false;
     log(`${model} refined` + (res.attempts > 1 ? ' (self-repaired)' : ''), 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+$('makeprint').onclick = async () => {
+  const model = $('model').value;
+  setBusy(true);
+  log(`making ${model} printable (Blender voxel remesh)…`, 'dim');
+  startProgress('bpy', `solidifying ${model}`, 60);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/make_printable', { model });
+    ok = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true; state.sliced = false;
+    log(`${res.model} ready — watertight and printable`, 'ok');
   } catch (e) { log(e.message, 'bad'); }
   endProgress(ok);
   setBusy(false);
