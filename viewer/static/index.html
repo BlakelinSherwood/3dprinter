@@ -16,7 +16,8 @@
           border-right: 1px solid var(--edge); display: flex; flex-direction: column; }
   #side header { padding: 14px 16px; border-bottom: 1px solid var(--edge);
                  display: flex; align-items: center; justify-content: space-between; }
-  #popout, #units { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 13px;
+  #ruler.on { color: var(--accent); border-color: var(--accent); }
+  #popout, #units, #ruler { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 13px;
             background: var(--bg); border: 1px solid var(--edge); color: var(--dim); }
   #popout:hover, #units:hover { color: var(--text); border-color: var(--accent); }
   /* Floating mode: the panel becomes a draggable card over the viewport. */
@@ -164,6 +165,7 @@
         <div class="sub" id="printer"><span class="dot" id="pdot"></span><span id="ptext">checking printer…</span></div>
       </div>
       <div style="display:flex; gap:6px">
+        <button id="ruler" title="Show measuring rulers at print size on each axis">&#128207;</button>
         <button id="units" title="Toggle inches / millimetres">in</button>
         <button id="popout" title="Pop the panel out so it can be dragged around">⇱</button>
       </div>
@@ -203,7 +205,7 @@
       <div id="params"></div>
       <div class="row" style="align-items:flex-end">
         <div class="field" style="flex:0 0 90px">
-          <label for="scale">scale &times;</label>
+          <label for="scale" title="Scale from full size: models are built at real-world dimensions; 1/64 here prints a 1/64 miniature">scale &times; <span style="opacity:.6">(of full)</span></label>
           <input type="text" id="scale" value="1" list="scales" spellcheck="false">
           <datalist id="scales">
             <option value="1/12"><option value="1/18"><option value="1/24">

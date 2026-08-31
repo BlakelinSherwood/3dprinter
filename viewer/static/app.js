@@ -95,6 +95,7 @@ function showSTL(url) {
     const d = Math.max(size * 2.6, 60);
     camera.position.set(d, -d, d * 0.75);
     controls.target.set(0, 0, (bb.max.z - bb.min.z) / 2);
+    buildRulers();
   });
 }
 
@@ -102,6 +103,87 @@ function showSTL(url) {
 let models = [];
 const state = { generated: false, sliced: false };
 let meshOffset = { x: 0, y: 0, z: 0 };
+
+// ---------------------------- measuring rulers ----------------------------
+let rulerOn = false;
+try { rulerOn = localStorage.getItem('studio.ruler') === '1'; } catch {}
+let rulerGroup = null;
+
+function textSprite(text, sizeMM) {
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d');
+  ctx.font = '28px -apple-system, sans-serif';
+  cv.width = Math.ceil(ctx.measureText(text).width) + 12;
+  cv.height = 38;
+  const c2 = cv.getContext('2d');
+  c2.font = '28px -apple-system, sans-serif';
+  c2.fillStyle = '#9fb6cc';
+  c2.textBaseline = 'middle';
+  c2.fillText(text, 6, 19);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.minFilter = THREE.LinearFilter;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
+  const h = sizeMM;                       // world height of the label
+  sp.scale.set(h * cv.width / cv.height, h, 1);
+  return sp;
+}
+
+function fmtTick(mm) {
+  return units === 'in' ? `${+(mm / MM_IN).toFixed(2)}"` : `${+mm.toFixed(0)}`;
+}
+
+function tickStep(lengthMM) {
+  const steps = units === 'in'
+    ? [3.175, 6.35, 12.7, 25.4, 50.8, 152.4, 304.8]   // 1/8" .. 12"
+    : [1, 2, 5, 10, 20, 50, 100, 200];
+  for (const s of steps) if (lengthMM / s <= 10) return s;
+  return steps[steps.length - 1];
+}
+
+function removeRulers() {
+  if (rulerGroup) { scene.remove(rulerGroup); rulerGroup = null; }
+}
+
+function buildRulers() {
+  removeRulers();
+  if (!rulerOn || !mesh || !lastResult) return;
+  const [X, Y, Z] = lastResult.bbox;
+  const g = new THREE.Group();
+  const lineMat = new THREE.LineBasicMaterial({ color: 0x8aa8c8 });
+  const off = Math.max(6, Math.max(X, Y) * 0.06);   // gap from the model
+  const tick = Math.max(2, Math.max(X, Y, Z) * 0.02);
+  const labelH = Math.max(3.5, Math.max(X, Y, Z) * 0.045);
+
+  function axisRuler(len, place, tickDir) {
+    const step = tickStep(len);
+    const pts = [place(0), place(len)];
+    for (let v = 0; v <= len + 1e-6; v += step) {
+      const p = place(Math.min(v, len));
+      pts.push(p, p.clone().add(tickDir.clone().multiplyScalar(tick)));
+      const lab = textSprite(fmtTick(v), labelH);
+      lab.position.copy(p.clone().add(tickDir.clone().multiplyScalar(tick + labelH * 0.8)));
+      g.add(lab);
+    }
+    // end tick at the exact length + total callout
+    const end = place(len);
+    pts.push(end, end.clone().add(tickDir.clone().multiplyScalar(tick * 1.6)));
+    const total = textSprite(fmtLen(+len.toFixed(2)), labelH * 1.25);
+    total.position.copy(end.clone().add(tickDir.clone().multiplyScalar(tick + labelH * 2.2)));
+    g.add(total);
+    const geo = new THREE.BufferGeometry().setFromPoints(pts);
+    g.add(new THREE.LineSegments(geo, lineMat));
+  }
+
+  // X along the front edge, Y along the left edge, Z up a front-left post
+  axisRuler(X, v => new THREE.Vector3(-X / 2 + v, -Y / 2 - off, 0),
+            new THREE.Vector3(0, -1, 0));
+  axisRuler(Y, v => new THREE.Vector3(-X / 2 - off, -Y / 2 + v, 0),
+            new THREE.Vector3(-1, 0, 0));
+  axisRuler(Z, v => new THREE.Vector3(-X / 2 - off, -Y / 2 - off, v),
+            new THREE.Vector3(-0.7, -0.7, 0));
+  rulerGroup = g;
+  scene.add(g);
+}
 
 // ------------------- click a spot on the model to focus edits -------------------
 let focus = null;        // {point:[x,y,z] model mm, region: "words"}
@@ -305,6 +387,14 @@ $('matlookup_btn').onclick = async () => {
   } catch {}
 })();
 
+$('ruler').classList.toggle('on', rulerOn);
+$('ruler').onclick = () => {
+  rulerOn = !rulerOn;
+  try { localStorage.setItem('studio.ruler', rulerOn ? '1' : '0'); } catch {}
+  $('ruler').classList.toggle('on', rulerOn);
+  buildRulers();
+};
+
 $('units').textContent = units;
 $('units').onclick = () => {
   // convert visible inputs in place, then re-label
@@ -397,6 +487,7 @@ $('units').textContent = units;
     lab.textContent = lab.textContent.replace(/\((in|mm)\)$/, `(${units})`);
   if (lastResult) showResult(lastResult);
   if (lastEst) $('est').innerHTML = fmtEst(lastEst);
+  buildRulers();
 };
 
 async function api(path, body) {
@@ -665,10 +756,18 @@ async function doDescribe(mode) {
     const res = await api('/api/describe', { mode, model, description, image: photo,
       focus: mode === 'edit' ? focus : null });
     describeOk = true;
-    $('scale').value = 1;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
-    showResult(res);
+    if (res.suggested_scale) {
+      // The model is built at real-world full size; the scale named in the
+      // description is applied here, not baked into the geometry.
+      $('scale').value = res.suggested_scale;
+      log(`modeled at full size — scale set to ${res.suggested_scale}`, 'dim');
+      await doGenerate();
+    } else {
+      $('scale').value = 1;
+      showResult(res);
+    }
     state.generated = true; state.sliced = false;
     $('desc').value = '';
     $('clearphoto').onclick && photo && $('clearphoto').onclick();

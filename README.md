@@ -152,6 +152,15 @@ scripts/studio.sh          # serves http://127.0.0.1:8434
   in `models/imports/<name>.json` and it is shown in the log on import. A
   paste-a-URL row accepts printables.com model links and direct .stl URLs
   for anything found elsewhere.
+- **Editing a downloaded mesh**: select an imported model, describe the
+  change (spot-selection works too) - the edit generates a `<name>_mod`
+  model that loads the pristine import via `models/_meshlib.py`, builds tool
+  solids in CadQuery, and combines them with watertight manifold booleans
+  (trimesh + manifold3d). The original import is never modified; the _mod is
+  parametric (the tool's dimensions become sliders) and can be edited again
+  like any other model. `_meshlib` raises on booleans that change nothing -
+  a missed cut (wrong extrude direction is the classic) fails loudly and
+  feeds the self-repair loop instead of shipping a silent no-op.
 - **Describe it** builds a brand-new model from a sentence ("Build new") or
   rewrites the selected one ("Edit selected"). Generation shells out to the
   `claude` CLI headlessly with `viewer/design_rules.md` — the Ender 3 V2 / PLA

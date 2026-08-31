@@ -98,6 +98,14 @@ if __name__ == "__main__":
   precisely (e.g. "|Z", ">Z") and keep radii small relative to the faces they
   touch, or skip the fillet.
 
+# Real-world size (mandatory)
+- Model real-world subjects at their TRUE full size in mm: a pickup truck is
+  ~5000mm long, a person ~1750mm tall, a house ~8000mm wide. NEVER pre-scale
+  the geometry - the studio applies printing scale afterwards, so a "1/64
+  scale car" request still gets modeled at ~5000mm and the studio sets 1/64.
+- Functional parts that print at working size (hooks, clips, coasters,
+  brackets, organizers) ARE their full size - model them at print dimensions.
+
 # Design quality (mandatory)
 - Aim for the detail of a well-designed store-bought product, not a minimal
   primitive. A plain disc or box is only acceptable if the user asks for
@@ -318,9 +326,17 @@ if __name__ == "__main__":
     build().export(out)
 
 - The mesh's own coordinates are what the user sees; probe nothing, trust the
-  stated coordinates. Keep tools generously sized (extend cuts 1mm past
+  stated coordinates. Keep tools generously sized (extend cuts a few mm past
   surfaces) so booleans are robust.
+- CRITICAL: cq extrude() goes along the workplane NORMAL - "XY" extrudes
+  toward +Z, "XZ" toward -Y, "YZ" toward +X. The safest pattern is to build
+  every tool on Workplane("XY") at the origin and move it into place with
+  .rotate() and .translate(), then sanity-check that the tool's coordinate
+  span overlaps the mesh's bounding box in all three axes.
 """
+
+
+SCALE_MENTION_RE = re.compile(r"\b1\s*[/:]\s*(\d{1,4})\b")
 
 
 def describe(mode, name, description, image=None, focus=None):
@@ -338,7 +354,6 @@ def describe(mode, name, description, image=None, focus=None):
                 raise FileNotFoundError(f"no such model: {name}")
         if mesh_base:
             original = None
-            import numpy as np
             tris = read_stl(IMPORTS / f"{name}.stl")
             lo = tris.reshape(-1, 3).min(axis=0)
             hi = tris.reshape(-1, 3).max(axis=0)
@@ -346,6 +361,11 @@ def describe(mode, name, description, image=None, focus=None):
                     f"{description}\n\nThe mesh's bounding box runs from "
                     f"({lo[0]:.1f}, {lo[1]:.1f}, {lo[2]:.1f}) to "
                     f"({hi[0]:.1f}, {hi[1]:.1f}, {hi[2]:.1f}) mm.")
+            if focus and focus.get("point"):
+                # The click is reported in bed-dropped coordinates; the raw
+                # mesh file the generated code loads keeps its original Z.
+                fx, fy, fz = (float(v) for v in focus["point"])
+                focus = dict(focus, point=[fx, fy, fz + float(lo[2])])
         else:
             original = path.read_text()
             task = (f"Modify this existing model per the request below. Keep the same "
@@ -408,6 +428,9 @@ def describe(mode, name, description, image=None, focus=None):
                 result = generate(out_name, {})
                 result["model"] = out_name
                 result["attempts"] = attempt
+                m = SCALE_MENTION_RE.search(description)
+                if m:
+                    result["suggested_scale"] = f"1/{m.group(1)}"
                 return result
             except Exception:
                 last_err = traceback.format_exc()
@@ -422,6 +445,8 @@ def describe(mode, name, description, image=None, focus=None):
 
 
 def load_model(path: Path):
+    if str(MODELS) not in sys.path:
+        sys.path.insert(0, str(MODELS))   # generated mods import _meshlib
     mtime = path.stat().st_mtime
     cached = _module_cache.get(str(path))
     if cached and cached[0] == mtime:
@@ -509,7 +534,7 @@ def generate(name, params, scale=1.0, rot=None):
         built = mod.build(**kwargs)
         if type(built).__module__.split(".")[0] == "trimesh":
             import numpy as np
-            tris = np.asarray(built.triangles, dtype=float)
+            tris = np.array(built.triangles, dtype=float)   # copy: trimesh caches are read-only
             return finish_mesh_tris(tris, name, scale, scale_label, rot, [])
         shape = as_shape(built)
         if rot:
