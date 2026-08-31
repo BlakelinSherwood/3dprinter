@@ -1273,6 +1273,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(p)
         if route == "/api/models":
             return self._send(200, list_models())
+        if route == "/api/busy":
+            running = [j for j in _jobs.values() if j["status"] == "running"]
+            return self._send(200, {"running": len(running)})
         if route.startswith("/api/job/"):
             jid = route.rsplit("/", 1)[-1]
             job = _jobs.get(jid)

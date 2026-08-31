@@ -8,8 +8,10 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # The upload step needs the OctoPrint key; pull it from ~/.zshrc when the
 # launching environment doesn't have it (e.g. started from a GUI process).
-if [ -z "${OCTOPRINT_API_KEY:-}" ] && [ -f "$HOME/.zshrc" ]; then
-  eval "$(grep '^export OCTOPRINT_API_KEY=' "$HOME/.zshrc" || true)"
+if [ -f "$HOME/.zshrc" ]; then
+  [ -z "${OCTOPRINT_API_KEY:-}" ] && eval "$(grep '^export OCTOPRINT_API_KEY=' "$HOME/.zshrc" || true)"
+  [ -z "${OCTO_URL:-}" ] && eval "$(grep '^export OCTO_URL=' "$HOME/.zshrc" || true)"
+  export OCTOPRINT_API_KEY OCTO_URL
 fi
 
 exec "$REPO_DIR/.venv-cad/bin/python" "$REPO_DIR/viewer/server.py" --port "${PORT:-8434}"

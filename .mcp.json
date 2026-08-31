@@ -8,8 +8,8 @@
       ],
       "env": {
         "PRINTER_TYPE": "octoprint",
-        "PRINTER_HOST": "127.0.0.1",
-        "PRINTER_PORT": "5001",
+        "PRINTER_HOST": "octopi.local",
+        "PRINTER_PORT": "80",
         "API_KEY": "${OCTOPRINT_API_KEY}",
         "SLICER_TYPE": "orcaslicer",
         "SLICER_PATH": "/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer",
