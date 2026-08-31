@@ -241,15 +241,38 @@ def mesh_volume(tris):
     return abs(np.einsum("ij,ij->i", v0, np.cross(v1, v2)).sum()) / 6.0
 
 
+MESH_EXTS = {".stl", ".glb", ".gltf", ".obj", ".ply", ".3mf", ".off"}
+
+
 def save_import(name, data_b64):
     data = base64.b64decode(data_b64)
     if len(data) > 60 * 1024 * 1024:
         raise ValueError("mesh too large (60MB max)")
+    ext = Path(name).suffix.lower()
+    if ext not in MESH_EXTS:
+        raise ValueError(f"unsupported mesh type {ext or '(none)'} - "
+                         f"accepted: {', '.join(sorted(MESH_EXTS))}")
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_") or "import"
     IMPORTS.mkdir(parents=True, exist_ok=True)
     path = IMPORTS / f"{stem}.stl"
-    path.write_bytes(data)
-    read_stl(path)   # validate now so a bad file fails at upload time
+    if ext == ".stl":
+        path.write_bytes(data)
+        read_stl(path)   # validate now so a bad file fails at upload time
+    else:
+        # GLB and friends (Tripo/Meshy web downloads, Sketchfab...) convert
+        # through trimesh into one STL.
+        import trimesh
+        tmp = OUTPUT / f"_convert{ext}"
+        OUTPUT.mkdir(exist_ok=True)
+        tmp.write_bytes(data)
+        scene = trimesh.load(str(tmp), force=None)
+        mesh = (scene.to_mesh() if hasattr(scene, "to_mesh")
+                else scene.dump(concatenate=True) if isinstance(scene, trimesh.Scene)
+                else scene)
+        if mesh.is_empty:
+            raise ValueError(f"no geometry found in {name}")
+        mesh.export(str(path))
+        tmp.unlink(missing_ok=True)
     return stem
 
 
@@ -1167,7 +1190,7 @@ def import_url(url):
         if len(info["files"]) == 1:
             return import_remote(info["id"], info["files"][0]["id"])
         return {"choose": info}     # several files - let the user pick
-    if re.match(r"https?://\S+\.stl(\?\S*)?$", url, re.I):
+    if re.match(r"https?://\S+\.(stl|glb|gltf|obj|ply|3mf)(\?\S*)?$", url, re.I):
         raw = http_download(url)
         stem = save_import(url.split("?")[0].rsplit("/", 1)[-1],
                            base64.b64encode(raw).decode())
@@ -1252,21 +1275,58 @@ def gen3d(image_b64=None, image_name=None, prompt=None):
         raise RuntimeError(gen3d_config()["hint"])
     if provider == "tripo":
         key = os.environ["TRIPO_API_KEY"]
-        H = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        H = {"Authorization": f"Bearer {key}"}
+        JH = {**H, "Content-Type": "application/json"}
+        API = "https://openapi.tripo3d.ai/v3"
+
+        def tripo(url, payload=None, headers=None, raw=None):
+            req = urllib.request.Request(url, data=raw or (json.dumps(payload).encode() if payload else None),
+                                         headers=headers or JH)
+            try:
+                with urllib.request.urlopen(req, timeout=60) as r:
+                    d = json.load(r)
+            except urllib.error.HTTPError as e:
+                body = e.read().decode(errors="replace")[:400]
+                raise RuntimeError(f"Tripo HTTP {e.code}: {body}")
+            if d.get("code") != 0:
+                raise RuntimeError(f"Tripo: {d.get('message')} - {d.get('suggestion','')}")
+            return d["data"]
+
         if image_b64:
-            ext = (Path(image_name or "img.png").suffix or ".png").lstrip(".")
-            body = {"type": "image_to_model",
-                    "file": {"type": ext, "data": image_b64}}
+            # multipart upload -> file token -> image_to_model
+            img = base64.b64decode(image_b64)
+            fname = Path(image_name or "photo.png").name
+            boundary = "----partstudio" + str(int(time.time()))
+            body = (f"--{boundary}\r\nContent-Disposition: form-data; "
+                    f'name="file"; filename="{fname}"\r\n'
+                    f"Content-Type: application/octet-stream\r\n\r\n").encode()                    + img + f"\r\n--{boundary}--\r\n".encode()
+            up = tripo(f"{API}/files", raw=body,
+                       headers={**H, "Content-Type": f"multipart/form-data; boundary={boundary}"})
+            token = up.get("file_token") or up.get("token") or up.get("id")
+            task = tripo(f"{API}/generation/image-to-model",
+                         {"model": os.environ.get("TRIPO_MODEL", "v3.0-20250812"),
+                          "file": {"type": Path(fname).suffix.lstrip(".") or "png",
+                                   "file_token": token}})["task_id"]
         else:
-            body = {"type": "text_to_model", "prompt": prompt or ""}
-        req = urllib.request.Request("https://api.tripo3d.ai/v2/openapi/task",
-                                     data=json.dumps(body).encode(), headers=H)
-        with urllib.request.urlopen(req, timeout=60) as r:
-            task = json.load(r)["data"]["task_id"]
-        done = _gen3d_poll(f"https://api.tripo3d.ai/v2/openapi/task/{task}", H,
-                           "success", ["data", "status"])
-        url = (done["data"].get("output", {}).get("pbr_model")
-               or done["data"].get("output", {}).get("model"))
+            task = tripo(f"{API}/generation/text-to-model",
+                         {"model": os.environ.get("TRIPO_MODEL", "v3.0-20250812"),
+                          "prompt": prompt or ""})["task_id"]
+
+        waited = 0
+        while True:
+            d = tripo(f"{API}/tasks/{task}")
+            if d.get("status") == "success":
+                break
+            if d.get("status") in ("failed", "cancelled"):
+                raise RuntimeError(f"Tripo task {d.get('status')}: {json.dumps(d)[:300]}")
+            time.sleep(6)
+            waited += 6
+            if waited > 900:
+                raise RuntimeError("Tripo generation timed out after 15 minutes")
+        out = d.get("output") or {}
+        url = (out.get("pbr_model") or out.get("model") or out.get("base_model")
+               or next((v for v in out.values()
+                        if isinstance(v, str) and v.startswith("http")), None))
     else:   # meshy
         key = os.environ["MESHY_API_KEY"]
         H = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}

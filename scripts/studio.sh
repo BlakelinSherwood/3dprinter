@@ -13,7 +13,9 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 if [ -f "$HOME/.zshrc" ]; then
   eval "$(grep '^export OCTOPRINT_API_KEY=' "$HOME/.zshrc" || true)"
   eval "$(grep '^export OCTO_URL=' "$HOME/.zshrc" || true)"
-  export OCTOPRINT_API_KEY OCTO_URL
+  eval "$(grep '^export TRIPO_API_KEY=' "$HOME/.zshrc" || true)"
+  eval "$(grep '^export MESHY_API_KEY=' "$HOME/.zshrc" || true)"
+  export OCTOPRINT_API_KEY OCTO_URL TRIPO_API_KEY MESHY_API_KEY
 fi
 
 exec "$REPO_DIR/.venv-cad/bin/python" "$REPO_DIR/viewer/server.py" --port "${PORT:-8434}"
