@@ -8,9 +8,11 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 # The upload step needs the OctoPrint key; pull it from ~/.zshrc when the
 # launching environment doesn't have it (e.g. started from a GUI process).
+# ~/.zshrc is the source of truth for the OctoPrint target - launcher
+# environments carry stale copies of these across config changes.
 if [ -f "$HOME/.zshrc" ]; then
-  [ -z "${OCTOPRINT_API_KEY:-}" ] && eval "$(grep '^export OCTOPRINT_API_KEY=' "$HOME/.zshrc" || true)"
-  [ -z "${OCTO_URL:-}" ] && eval "$(grep '^export OCTO_URL=' "$HOME/.zshrc" || true)"
+  eval "$(grep '^export OCTOPRINT_API_KEY=' "$HOME/.zshrc" || true)"
+  eval "$(grep '^export OCTO_URL=' "$HOME/.zshrc" || true)"
   export OCTOPRINT_API_KEY OCTO_URL
 fi
 
