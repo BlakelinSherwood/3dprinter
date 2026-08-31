@@ -490,6 +490,23 @@ $('units').textContent = units;
   buildRulers();
 };
 
+async function apiJob(path, body) {
+  // long-running codegen: submit, then poll - a single held request gets
+  // killed by proxies after a couple of minutes
+  const start = await api(path, body);
+  if (!start.job) return start;
+  for (;;) {
+    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch(`/api/job/${start.job}`);
+    const j = await res.json();
+    if (j.status === 'done') return j.result;
+    if (j.status === 'error') {
+      const tail = (j.error || 'failed').trim().split('\n');
+      throw new Error(tail.slice(-3).join(' '));
+    }
+  }
+}
+
 async function api(path, body) {
   const r = await fetch(path, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -563,7 +580,7 @@ function endProgress(ok) {
 let busy = false;
 function setBusy(b) {
   busy = b;
-  for (const id of ['buildnew', 'editsel', 'generate']) $(id).disabled = b;
+  for (const id of ['buildnew', 'editsel', 'generate', 'refine']) $(id).disabled = b;
   if (b) { $('slice').disabled = true; $('upload').disabled = true; }
   else setButtons();
 }
@@ -753,7 +770,7 @@ async function doDescribe(mode) {
                 photo ? 130 : (mode === 'edit' ? 85 : 100));
   let describeOk = false;
   try {
-    const res = await api('/api/describe', { mode, model, description, image: photo,
+    const res = await apiJob('/api/describe', { mode, model, description, image: photo,
       focus: mode === 'edit' ? focus : null });
     describeOk = true;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
@@ -1028,6 +1045,29 @@ function syncModelRow() {
     dl.classList.add('off');
   }
 }
+$('refine').onclick = async () => {
+  const model = $('model').value;
+  if (!model) return;
+  const m = models.find(x => x.name === model);
+  if (m && m.imported) { log('imports are fixed meshes — use Edit selected to modify them', 'bad'); return; }
+  const notes = $('desc').value.trim() || null;
+  setBusy(true);
+  log(`refining ${model}${notes ? ' — focus: ' + notes : ''}…`, 'dim');
+  startProgress('refine', `refining ${model} (looking at its own renders)`, 160);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/refine', { model, notes });
+    ok = true;
+    $('desc').value = '';
+    await refreshModels(model);
+    showResult(res);
+    state.generated = true; state.sliced = false;
+    log(`${model} refined` + (res.attempts > 1 ? ' (self-repaired)' : ''), 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
 $('revert').onclick = async () => {
   const model = $('model').value;
   if (!model) return;

@@ -48,6 +48,25 @@ MIME = {
 _module_cache = {}   # path -> (mtime, module)
 _generate_lock = threading.Lock()   # OCC is not thread-safe
 _codegen_lock = threading.Lock()    # one description job at a time
+_jobs = {}                          # job id -> {status, result?, error?}
+
+
+def start_job(fn, *args):
+    """Run fn in a worker thread; the client polls /api/job for the outcome.
+    Long codegen can't live inside one HTTP request - proxies kill idle
+    connections after a couple of minutes."""
+    import uuid
+    jid = uuid.uuid4().hex[:12]
+    _jobs[jid] = {"status": "running", "started": time.time()}
+    def run():
+        try:
+            _jobs[jid]["result"] = fn(*args)
+            _jobs[jid]["status"] = "done"
+        except Exception:
+            _jobs[jid]["error"] = traceback.format_exc()
+            _jobs[jid]["status"] = "error"
+    threading.Thread(target=run, daemon=True).start()
+    return {"job": jid}
 
 PLATE_X, PLATE_Y, PLATE_Z = 220.0, 220.0, 250.0
 
@@ -92,11 +111,23 @@ if __name__ == "__main__":
 - No file I/O outside that runner, no network, no prints during build().
 - Model the part already oriented for printing per the design rules below,
   bottom face on the z=0 plane.
-- Prefer robust CadQuery, but do not stop at primitives: use revolve, sweep,
-  loft, shell, and polar/linear patterns (pushPoints, polarArray) when they
-  fit the part. Selectors can be brittle - when filleting, select edges
-  precisely (e.g. "|Z", ">Z") and keep radii small relative to the faces they
-  touch, or skip the fillet.
+- CONTOURS ARE MANDATORY for anything that is curved in real life (vehicles,
+  animals, furniture, consumer products, organic shapes). Box-and-cylinder
+  massing is only acceptable for parts that truly are prismatic (brackets,
+  plates, hardware). Your primary surfacing tools, with working idioms:
+  * Spline side-profile, then extrude or cut with it:
+      profile = (cq.Workplane("XZ").spline([(0,0),(l*0.25,h*0.85),
+                 (l*0.6,h),(l,h*0.4)]).lineTo(l,0).close().extrude(w))
+  * Loft between 2-4 cross-sections for bodies, hulls, handles:
+      body = (cq.Workplane("XY").ellipse(a1,b1)
+              .workplane(offset=h1).ellipse(a2,b2)
+              .workplane(offset=h2).ellipse(a3,b3).loft(ruled=False))
+  * revolve() for wheels, domes, vases; sweep() for rails, pipes, rims;
+    shell() to hollow; .mirror() to keep symmetric halves consistent.
+  * Wheel arches and cutouts: cut with cylinders, then fillet the cut rims.
+  * LARGE fillets (several mm at full scale) on body masses are what reads
+    as "designed"; select the edges precisely (e.g. "|Y", ">Z") and fillet
+    the biggest masses first, before small features are added.
 
 # Real-world size (mandatory)
 - Model real-world subjects at their TRUE full size in mm: a pickup truck is
@@ -133,7 +164,7 @@ def call_claude(prompt, allow_read=False, model="sonnet"):
     p = subprocess.run(
         cmd,
         cwd=scratch, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-        timeout=900,   # opus writing a highly detailed part can run 5-10 min
+        timeout=1500,  # a full contoured rewrite can exceed 20 minutes
     )
     if p.returncode != 0:
         out = (p.stderr or "") + (p.stdout or "")
@@ -339,6 +370,107 @@ if __name__ == "__main__":
 SCALE_MENTION_RE = re.compile(r"\b1\s*[/:]\s*(\d{1,4})\b")
 
 
+def blockiness(stl_path):
+    """Fraction of surface area lying in flat axis-aligned planes."""
+    try:
+        import numpy as np
+        tris = read_stl(stl_path)
+        n = np.cross(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])
+        areas = np.linalg.norm(n, axis=1) / 2.0
+        total = areas.sum()
+        if total <= 0:
+            return None
+        unit = n / (2.0 * areas[:, None] + 1e-12)
+        aligned = (np.abs(unit) > 0.999).any(axis=1)
+        return float(areas[aligned].sum() / total)
+    except Exception:
+        return None
+
+
+def render_views(name):
+    """Render the model's current STL from three angles so the refiner can
+    actually see its own work. Returns PNG paths."""
+    import numpy as np
+    import trimesh
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    mesh = trimesh.load(str(OUTPUT / f"{name}.stl"), force="mesh")
+    v, f = mesh.vertices, mesh.faces
+    ext = v.max(axis=0) - v.min(axis=0)
+    out = REPO / "uploads"
+    out.mkdir(exist_ok=True)
+    paths = []
+    for label, elev, azim in (("iso", 22, -55), ("front", 4, -90), ("side", 4, 0)):
+        fig = plt.figure(figsize=(5.5, 4.2), dpi=100)
+        ax = fig.add_subplot(projection="3d")
+        ax.plot_trisurf(v[:, 0], v[:, 1], v[:, 2], triangles=f,
+                        color=(0.55, 0.66, 0.82), edgecolor="none", shade=True)
+        ax.set_box_aspect(tuple(np.maximum(ext, 1e-6)))
+        ax.view_init(elev, azim)
+        ax.set_axis_off()
+        p = out / f"render-{name}-{label}.png"
+        fig.savefig(p, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        paths.append(str(p))
+    return paths
+
+
+def refine(name, notes=None):
+    """Show the model's renders to the generator and have it rewrite the file
+    with more convincing detail. One round per call."""
+    path = MODELS / f"{name}.py"
+    if not path.is_file():
+        raise ValueError("only parametric models can be refined - imports are "
+                         "fixed meshes (edit them by description instead)")
+    if not (OUTPUT / f"{name}.stl").is_file():
+        generate(name, {})
+    original = path.read_text()
+    views = render_views(name)
+    task = (f"You previously wrote the CadQuery model below. Rendered previews "
+            f"of exactly what it produces are at these paths - use the Read "
+            f"tool to look at ALL of them before anything else:\n"
+            + "\n".join(views) +
+            f"\n\nCritique your own output honestly: where does it look "
+            f"crude, blocky, mis-proportioned or underdetailed for what it is "
+            f"meant to be? Then rewrite the COMPLETE file with meaningfully "
+            f"richer, more convincing, still-printable detail. Keep the same "
+            f"`# model:` name, keep full-size real-world dimensions, keep or "
+            f"extend the parameters.")
+    if notes:
+        task += f"\n\nThe user specifically wants: {notes}"
+    task += f"\n\nCurrent file:\n{original}"
+    prompt = (MODEL_CONTRACT + "\n# Printer design rules (mandatory)\n"
+              + design_rules() + "\n# Task\n" + task + OUTPUT_RULE)
+    with _codegen_lock:
+        last_err = None
+        for attempt in (1, 2):
+            try:
+                reply = call_claude(prompt, allow_read=True, model="opus")
+            except subprocess.TimeoutExpired:
+                raise RuntimeError("refine ran past the 25-minute limit - try "
+                                   "again with specific notes about what to "
+                                   "improve")
+            code = extract_code(reply)
+            hist = MODELS / ".history"
+            hist.mkdir(exist_ok=True)
+            (hist / f"{name}-{int(time.time())}.py").write_text(path.read_text())
+            path.write_text(code)
+            try:
+                result = generate(name, {})
+                result["model"] = name
+                result["attempts"] = attempt
+                return result
+            except Exception:
+                last_err = traceback.format_exc()
+                prompt += (f"\n\nYour previous file failed when run:"
+                           f"\n{last_err[-1500:]}\nOutput the complete "
+                           f"corrected file.{OUTPUT_RULE}")
+        path.write_text(original)
+        raise RuntimeError(f"refine failed twice; last error:\n{last_err}")
+
+
 def describe(mode, name, description, image=None, focus=None):
     """Natural-language build/edit. Writes models/<name>.py after validating
     that the generated file actually loads and builds."""
@@ -408,7 +540,7 @@ def describe(mode, name, description, image=None, focus=None):
                                     model="opus")
             except subprocess.TimeoutExpired:
                 raise RuntimeError(
-                    "generation ran past the 15-minute limit. Very high detail "
+                    "generation ran past the 25-minute limit. Very high detail "
                     "requests can do this - try describing the shape more "
                     "specifically, or build a simpler base and add detail with "
                     "focused edits.")
@@ -565,6 +697,12 @@ def generate(name, params, scale=1.0, rot=None):
         warnings.append(f"TOO TALL for 250mm height: {bb.zlen:.0f} - will not print")
     if bb.zlen > 30 and bb.zlen > 2.5 * min(bb.xlen, bb.ylen):
         warnings.append("tall part with a small footprint - consider enabling Brim")
+    blocky = blockiness(OUTPUT / f"{name}.stl")
+    if blocky is not None and blocky > 0.80:
+        warnings.append(
+            f"{int(blocky*100)}% of the surface is flat axis-aligned planes - "
+            f"reads as blocky; use splines/lofts/large fillets for curved "
+            f"subjects")
     # Too small: printability heuristics for a 0.4 nozzle.
     vol, area = shape.Volume(), shape.Area()
     if min(bb.xlen, bb.ylen, bb.zlen) < 2.0:
@@ -1032,7 +1170,7 @@ def import_url(url):
                      ".stl file")
 
 
-OCTO_URL = "http://127.0.0.1:5001"
+OCTO_URL = os.environ.get("OCTO_URL", "http://127.0.0.1:5001")
 
 
 def octo_request(path, method="GET"):
@@ -1135,6 +1273,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._file(p)
         if route == "/api/models":
             return self._send(200, list_models())
+        if route.startswith("/api/job/"):
+            jid = route.rsplit("/", 1)[-1]
+            job = _jobs.get(jid)
+            if not job:
+                return self._send(404, {"error": "unknown job"})
+            out = dict(job)
+            if job["status"] != "running":
+                # deliver once, then forget
+                _jobs.pop(jid, None)
+            return self._send(200, out)
         if route == "/api/material_custom":
             return self._send(200, custom_material_meta() or {})
         if route == "/api/printer":
@@ -1170,15 +1318,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, material_lookup(req.get("query")))
             if self.path == "/api/files/delete":
                 return self._send(200, octo_delete(req["name"]))
+            if self.path == "/api/refine":
+                return self._send(200, start_job(
+                    refine, req["model"], req.get("notes")))
             if self.path == "/api/revert":
                 return self._send(200, revert_model(req["model"]))
             if self.path == "/api/import":
                 stem = save_import(req["name"], req["data"])
                 return self._send(200, {"model": stem})
             if self.path == "/api/describe":
-                return self._send(200, describe(
-                    req.get("mode", "new"), req.get("model"), req["description"],
-                    req.get("image"), req.get("focus")))
+                return self._send(200, start_job(
+                    describe, req.get("mode", "new"), req.get("model"),
+                    req["description"], req.get("image"), req.get("focus")))
             return self._send(404, {"error": "not found"})
         except Exception:
             return self._send(500, {"error": traceback.format_exc()})
