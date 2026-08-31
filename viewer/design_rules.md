@@ -17,8 +17,9 @@ Fits and clearances - MEASURED on this printer (fit_test, 2026-08-31,
 - Below +0.4: will NOT assemble. Never design a mating fit under +0.4.
 - Press/friction fit (holds firm): +0.4 on the hole.
 - Moving fit (rotates/slides with a little drag): +0.5.
-- Confident free-spin (turrets, axles, wheels): +0.6 (extrapolated one step
-  past the measured +0.5 "barely moves").
+- Confident free-spin (turrets, axles, wheels): +0.6 (Blake handled the +0.5
+  fit and judged one more step frees it; verify in-part when a joint is
+  load-bearing).
 - M3 screw clearance hole: 3.6 here (3.4 nominal + measured shrink).
   M3 self-tap into plastic: 2.9.
 
