@@ -386,7 +386,9 @@ if __name__ == "__main__":
   * split_plane(mesh, point, normal) -> (kept, removed): capped watertight
     halves. Use for turret rings, hull sections, wing joints.
   * peg(diameter, length) -> cylinder tool: union for the peg, and subtract
-    peg(d, l, clearance=0.4) for a free-spinning socket (0.2 for snap-fit).
+    peg(d, l, clearance=...) for the socket. MEASURED on this printer:
+    0.4 = press fit, 0.5 = moves with drag, 0.6 = free spin (use 0.6 for
+    turrets/axles). Below 0.4 will not assemble.
     Position with .apply_translation([x, y, z]).
   * parts(a, b, ...) -> lays the pieces side by side on the plate as ONE
     printable set; return it from build() when the edit splits the model.

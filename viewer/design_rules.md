@@ -12,9 +12,15 @@ Feature sizes (line width 0.44):
 - Free-standing pins at least 3.0 diameter; prefer ribs over pins.
 - Small holes print undersized: add 0.2 to any nominal hole diameter.
 
-Fits and clearances (between this print and another part):
-- Press fit: +0.1 on the hole. Snug sliding fit: +0.2. Loose/drop-in: +0.3.
-- M3 screw clearance hole: 3.4. M3 self-tap into plastic: 2.8.
+Fits and clearances - MEASURED on this printer (fit_test, 2026-08-31,
+5mm peg in +0.1..+0.5 holes; holes print ~0.15mm undersized here):
+- Below +0.4: will NOT assemble. Never design a mating fit under +0.4.
+- Press/friction fit (holds firm): +0.4 on the hole.
+- Moving fit (rotates/slides with a little drag): +0.5.
+- Confident free-spin (turrets, axles, wheels): +0.6 (extrapolated one step
+  past the measured +0.5 "barely moves").
+- M3 screw clearance hole: 3.6 here (3.4 nominal + measured shrink).
+  M3 self-tap into plastic: 2.9.
 
 Detailing:
 - Chamfer the bottom perimeter 0.4-0.6 at 45 degrees (counters elephant's foot).
