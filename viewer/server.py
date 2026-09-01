@@ -257,17 +257,73 @@ def mesh_volume(tris):
     return abs(np.einsum("ij,ij->i", v0, np.cross(v1, v2)).sum()) / 6.0
 
 
+# What the importer accepts, grouped by how it's read:
+#   MESH_EXTS   - triangle-mesh files trimesh loads directly
+#   BREP_EXTS   - CAD solids (B-rep); read via OpenCASCADE and tessellated
+#   BLENDER_EXTS- formats only Blender reads; converted through it headlessly
 MESH_EXTS = {".stl", ".glb", ".gltf", ".obj", ".ply", ".3mf", ".off"}
+BREP_EXTS = {".step", ".stp", ".iges", ".igs", ".brep"}
+BLENDER_EXTS = {".fbx", ".dae", ".3ds", ".x3d", ".wrl", ".usd", ".usdz",
+                ".usdc", ".usda", ".blend"}
+IMPORT_EXTS = MESH_EXTS | BREP_EXTS | BLENDER_EXTS
+
+
+def _brep_to_stl(src, dst, ext):
+    """CAD solid (STEP/IGES/BREP) -> tessellated printable STL, via
+    OpenCASCADE. STEP is what SolidWorks / Fusion / DataCAD / most CAD tools
+    export, and it tessellates to a watertight mesh."""
+    import cadquery as cq
+    from cadquery import importers, exporters
+    if ext in (".step", ".stp"):
+        wp = importers.importStep(str(src))
+    elif ext == ".brep":
+        wp = importers.importBrep(str(src))
+    else:  # IGES: OCP reader -> shape -> workplane
+        from OCP.IGESControl import IGESControl_Reader
+        r = IGESControl_Reader()
+        if r.ReadFile(str(src)) != 1:
+            raise ValueError("could not read the IGES file")
+        r.TransferRoots()
+        shp = r.OneShape()
+        if shp.IsNull():
+            raise ValueError("the IGES file contained no shapes")
+        wp = cq.Workplane("XY").newObject([cq.Shape.cast(shp)])
+    # print-friendly tessellation: 0.05mm linear / 0.2rad angular deflection
+    exporters.export(wp, str(dst), exporters.ExportTypes.STL,
+                     tolerance=0.05, angularTolerance=0.2)
+    if not Path(dst).is_file() or Path(dst).stat().st_size < 100:
+        raise ValueError("CAD file imported but produced no printable geometry")
+
+
+def _blender_to_stl(src, dst, ext):
+    """FBX / Collada / 3DS / X3D / USD / .blend -> STL, via headless Blender.
+    These are what Chief Architect, SketchUp, and game/viz tools export."""
+    if not Path(BLENDER).is_file():
+        raise RuntimeError(
+            f"{ext} files need Blender to convert - install it with "
+            "'brew install --cask blender' (or export your model as STL/OBJ/STEP)")
+    job = REPO / "scripts/bpy_convert.py"
+    p = subprocess.run(
+        [BLENDER, "--background", "--python", str(job), "--", str(src), str(dst)],
+        capture_output=True, text=True, timeout=600)
+    if not Path(dst).is_file() or "BPY_CONVERT_OK" not in p.stdout:
+        err = [l for l in (p.stdout + p.stderr).splitlines() if "BPY_CONVERT_ERR" in l]
+        raise RuntimeError("could not convert this file: " +
+                           (err[0].replace("BPY_CONVERT_ERR", "").strip()
+                            if err else (p.stdout + p.stderr)[-400:]))
 
 
 def save_import(name, data_b64):
     data = base64.b64decode(data_b64)
     if len(data) > 60 * 1024 * 1024:
-        raise ValueError("mesh too large (60MB max)")
+        raise ValueError("file too large (60MB max)")
     ext = Path(name).suffix.lower()
-    if ext not in MESH_EXTS:
-        raise ValueError(f"unsupported mesh type {ext or '(none)'} - "
-                         f"accepted: {', '.join(sorted(MESH_EXTS))}")
+    if ext not in IMPORT_EXTS:
+        raise ValueError(
+            f"unsupported file type {ext or '(none)'}. Accepted: meshes "
+            f"(STL, OBJ, PLY, OFF, GLB, GLTF, 3MF), CAD solids (STEP, STP, "
+            f"IGES, IGS, BREP), and via Blender (FBX, DAE, 3DS, X3D, USD). "
+            f"For SolidWorks/DataCAD, export to STEP first.")
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_.-")[:80] \
         or "import"
     if not stem[0].isalnum():
@@ -279,21 +335,28 @@ def save_import(name, data_b64):
     if ext == ".stl":
         path.write_bytes(data)
         read_stl(path)   # validate now so a bad file fails at upload time
-    else:
-        # GLB and friends (Tripo/Meshy web downloads, Sketchfab...) convert
-        # through trimesh into one STL.
-        import trimesh
-        import uuid
-        tmp = OUTPUT / f"_convert_{uuid.uuid4().hex[:8]}{ext}"
-        OUTPUT.mkdir(exist_ok=True)
-        tmp.write_bytes(data)
-        scene = trimesh.load(str(tmp), force=None)
-        mesh = (scene.to_mesh() if hasattr(scene, "to_mesh")
-                else scene.dump(concatenate=True) if isinstance(scene, trimesh.Scene)
-                else scene)
-        if mesh.is_empty:
-            raise ValueError(f"no geometry found in {name}")
-        mesh.export(str(path))
+        return stem
+
+    import uuid
+    OUTPUT.mkdir(exist_ok=True)
+    tmp = OUTPUT / f"_convert_{uuid.uuid4().hex[:8]}{ext}"
+    tmp.write_bytes(data)
+    try:
+        if ext in BREP_EXTS:
+            _brep_to_stl(tmp, path, ext)
+        elif ext in BLENDER_EXTS:
+            _blender_to_stl(tmp, path, ext)
+        else:
+            # trimesh mesh formats (GLB/OBJ/PLY/... incl. Tripo/Sketchfab downloads)
+            import trimesh
+            scene = trimesh.load(str(tmp), force=None)
+            mesh = (scene.to_mesh() if hasattr(scene, "to_mesh")
+                    else scene.dump(concatenate=True)
+                    if isinstance(scene, trimesh.Scene) else scene)
+            if mesh.is_empty:
+                raise ValueError(f"no geometry found in {name}")
+            mesh.export(str(path))
+    finally:
         tmp.unlink(missing_ok=True)
     return stem
 

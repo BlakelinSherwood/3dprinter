@@ -268,9 +268,9 @@
             <span id="photoname">no photo</span>
             <button id="clearphoto" hidden title="Remove photo">&times;</button>
             <button id="bpbtn" title="Split a blueprint sheet into views, then build a 3D model from them">&#8980; blueprint</button>
-            <button id="importbtn" title="Import a mesh file: STL, GLB, OBJ, PLY, 3MF">&#8853; mesh</button>
+            <button id="importbtn" title="Import a 3D file: meshes (STL, OBJ, PLY, OFF, GLB, GLTF, 3MF), CAD solids (STEP, STP, IGES, IGS, BREP), or FBX / DAE / 3DS / X3D / USD (via Blender). SolidWorks/DataCAD: export to STEP first.">&#8853; model</button>
             <button id="findbtn" title="Search public model libraries">&#128270; find</button>
-            <input type="file" id="importfile" accept=".stl,.glb,.gltf,.obj,.ply,.3mf" hidden>
+            <input type="file" id="importfile" accept=".stl,.glb,.gltf,.obj,.ply,.off,.3mf,.step,.stp,.iges,.igs,.brep,.fbx,.dae,.3ds,.x3d,.wrl,.usd,.usdz,.usdc,.usda,.blend" hidden>
             <input type="file" id="bpfile" accept="image/png,image/jpeg,image/webp" hidden>
           </div>
           <div class="row" id="focusrow" hidden>
