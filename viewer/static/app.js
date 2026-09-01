@@ -1345,6 +1345,185 @@ async function loadQueue() {
 $('queue').addEventListener('toggle', () => { if ($('queue').open) loadQueue(); });
 loadQueue();
 
+// ---------------------------- toolpath view ----------------------------
+// The sliced G-code rendered as real toolpaths: feature-colored line
+// segments (one draw call), a layer slider, and - when the printer is
+// printing this exact file - a LIVE mode that paints only what is
+// physically printed, synced by byte position.
+const FEATURE_COLORS = [
+  0x4c9be8, 0x2d6fb3, 0xd96a6a, 0xe8a33d, 0xb5893c, 0x8e6cc0, 0x7f5aa8,
+  0xd9c96a, 0xc8a2c8, 0x6a8759, 0x5a7a4a, 0x66b2a3, 0x4d8a80, 0x999999,
+  0x555555, 0x777777,
+];
+const tp = {
+  on: false, name: null, printed: null, ghost: null, nozzle: null,
+  offsets: null, layers: [], count: 0, liveTimer: null, live: false,
+  followLive: true,
+};
+
+function tpClear() {
+  for (const k of ['printed', 'ghost', 'nozzle']) {
+    if (tp[k]) { scene.remove(tp[k]); tp[k].geometry?.dispose?.(); tp[k] = null; }
+  }
+  clearInterval(tp.liveTimer);
+  tp.liveTimer = null;
+  tp.on = false; tp.live = false; tp.name = null;
+  $('tpui').hidden = true;
+  if (mesh) mesh.visible = true;
+  buildRulers();
+  updateBadge();
+}
+
+function tpSetLayer(idx) {          // idx: 1-based layer number
+  if (!tp.printed || !tp.layers.length) return;
+  idx = Math.max(1, Math.min(tp.layers.length, idx));
+  const end = idx >= tp.layers.length ? tp.count : tp.layers[idx].firstSeg;
+  tp.printed.geometry.setDrawRange(0, end * 2);
+  $('tplayer').value = idx;
+  $('tplabel').textContent =
+    `layer ${idx}/${tp.layers.length} · z ${tp.layers[idx - 1].z.toFixed(2)}mm`;
+}
+
+function tpSegForFilepos(filepos) {
+  // binary search: last segment whose source line starts before filepos
+  const a = tp.offsets;
+  let lo = 0, hi = tp.count - 1, ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (a[mid] <= filepos) { ans = mid + 1; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return ans;
+}
+
+function tpLayerForSeg(seg) {
+  let l = 1;
+  while (l < tp.layers.length && tp.layers[l].firstSeg <= seg) l++;
+  return l;
+}
+
+async function tpLiveTick() {
+  if (!tp.on) return;
+  try {
+    const j = await (await fetch('/api/printjob')).json();
+    const printingThis = j.file === tp.name + '.gcode' && /print/i.test(j.state || '');
+    $('tplive').hidden = !printingThis;
+    tp.live = printingThis;
+    if (!printingThis || j.filepos == null) return;
+    const seg = tpSegForFilepos(j.filepos);
+    if (tp.followLive) {
+      tp.printed.geometry.setDrawRange(0, seg * 2);
+      const layer = tpLayerForSeg(seg);
+      $('tplayer').value = layer;
+      const pct = j.completion ? j.completion.toFixed(1) : '?';
+      const left = j.printTimeLeft
+        ? ` · ${Math.round(j.printTimeLeft / 60)}m left` : '';
+      $('tplabel').textContent =
+        `LIVE ${pct}% · layer ${layer}/${tp.layers.length}${left}`;
+      // nozzle marker at the tip of the printed path
+      if (seg > 0 && seg <= tp.count) {
+        const b = (seg - 1) * 6;
+        const pa = tp.printed.geometry.getAttribute('position').array;
+        tp.nozzle.position.set(pa[b + 3], pa[b + 4], pa[b + 5]);
+        tp.nozzle.visible = true;
+      }
+    }
+  } catch {}
+}
+
+async function openToolpath(name) {
+  tpClear();
+  const r = await fetch(`/output/${name}.gcode?t=` + Date.now());
+  if (!r.ok) { log('no sliced G-code for ' + name + ' — slice first', 'bad'); return; }
+  const text = await r.text();
+  log(`parsing toolpath (${(text.length / 1048576).toFixed(1)} MB)…`, 'dim');
+  const worker = new Worker('/static/gcode.worker.js');
+  const parsed = await new Promise((resolve, reject) => {
+    worker.onmessage = (ev) => resolve(ev.data);
+    worker.onerror = (e) => reject(new Error('toolpath parse failed: ' + e.message));
+    worker.postMessage(text);
+  });
+  worker.terminate();
+  if (!parsed.count) { log('no printable moves found in the G-code', 'bad'); return; }
+
+  const positions = new Float32Array(parsed.positions);
+  const features = new Uint8Array(parsed.features);
+  tp.offsets = new Uint32Array(parsed.offsets);
+  tp.layers = parsed.layers;
+  tp.count = parsed.count;
+  tp.name = name;
+
+  // bed coordinates -> viewer frame (plate centered on origin)
+  for (let i = 0; i < positions.length; i += 3) {
+    positions[i] -= PLATE / 2;
+    positions[i + 1] -= PLATE / 2;
+  }
+  // per-vertex colors from the feature palette
+  const colors = new Uint8Array(parsed.count * 6);
+  for (let s = 0; s < parsed.count; s++) {
+    const c = FEATURE_COLORS[features[s]] ?? 0x888888;
+    const r8 = (c >> 16) & 255, g8 = (c >> 8) & 255, b8 = c & 255;
+    const b = s * 6;
+    colors[b] = r8; colors[b+1] = g8; colors[b+2] = b8;
+    colors[b+3] = r8; colors[b+4] = g8; colors[b+5] = b8;
+  }
+  const posAttr = new THREE.BufferAttribute(positions, 3);
+  const colAttr = new THREE.BufferAttribute(colors, 3, true);
+
+  const gPrinted = new THREE.BufferGeometry();
+  gPrinted.setAttribute('position', posAttr);
+  gPrinted.setAttribute('color', colAttr);
+  tp.printed = new THREE.LineSegments(gPrinted,
+    new THREE.LineBasicMaterial({ vertexColors: true }));
+  tp.printed.frustumCulled = false;
+
+  const gGhost = new THREE.BufferGeometry();
+  gGhost.setAttribute('position', posAttr);
+  tp.ghost = new THREE.LineSegments(gGhost,
+    new THREE.LineBasicMaterial({ color: 0x3a4150, transparent: true, opacity: 0.25 }));
+  tp.ghost.frustumCulled = false;
+
+  tp.nozzle = new THREE.Mesh(
+    new THREE.SphereGeometry(1.6, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0xffb224 }));
+  tp.nozzle.visible = false;
+
+  scene.add(tp.ghost, tp.printed, tp.nozzle);
+  if (mesh) mesh.visible = false;
+  removeRulers();
+  tp.on = true;
+  $('tpui').hidden = false;
+  $('tplayer').max = tp.layers.length || 1;
+  tpSetLayer(tp.layers.length);
+  $('badge').textContent = 'toolpath view — colors are print features';
+  log(`toolpath: ${tp.count.toLocaleString()} segments, ${tp.layers.length} layers`, 'ok');
+  tp.followLive = true;
+  tpLiveTick();
+  tp.liveTimer = setInterval(tpLiveTick, 2500);
+}
+
+$('tpbtn').onclick = () => {
+  if (tp.on) tpClear();
+  else openToolpath($('model').value);
+};
+$('tpclose').onclick = tpClear;
+$('tplayer').addEventListener('input', () => {
+  tp.followLive = false;          // dragging the slider pauses live-follow
+  tp.nozzle.visible = false;
+  tpSetLayer(parseInt($('tplayer').value));
+});
+$('tplayer').addEventListener('change', () => {
+  // release at the top re-arms live follow
+  if (parseInt($('tplayer').value) >= tp.layers.length) tp.followLive = true;
+});
+
+// toolpath button lights up whenever a sliced file exists for the model
+const _updateStages0 = updateStages;
+updateStages = function () {
+  _updateStages0();
+  $('tpbtn').disabled = busy || !$('model').value;
+};
+
 // ---------------------------- init ----------------------------
 (async function init() {
   setMode('new');

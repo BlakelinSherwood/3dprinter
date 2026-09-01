@@ -879,7 +879,7 @@ QUALITY_BASE = {
     "internal_bridge_density": "75%",
     "small_area_infill_flow_compensation": "1",
     "gap_fill_target": "everywhere",
-    "wall_sequence": "inner wall/outer wall/inner wall",
+    "wall_sequence": "inner-outer-inner wall",
     "staggered_inner_seams": "1",
     "counterbore_hole_bridging": "sacrificiallayer",
 }
@@ -1622,9 +1622,24 @@ class Handler(BaseHTTPRequestHandler):
             if not str(p).startswith(str(STATIC)):
                 return self._send(403, {"error": "forbidden"})
             return self._file(p)
-        if route.startswith("/output/") and route.endswith(".stl"):
+        if route.startswith("/output/") and route.endswith((".stl", ".gcode")):
             p = (OUTPUT / Path(route).name).resolve()
             return self._file(p)
+        if route == "/api/printjob":
+            # live print state for toolpath sync: which file, byte position
+            try:
+                d = octo_request("/api/job")
+                prog = d.get("progress", {})
+                return self._send(200, {
+                    "state": d.get("state"),
+                    "file": (d.get("job", {}).get("file") or {}).get("name"),
+                    "filepos": prog.get("filepos"),
+                    "filesize": (d.get("job", {}).get("file") or {}).get("size"),
+                    "completion": prog.get("completion"),
+                    "printTimeLeft": prog.get("printTimeLeft"),
+                })
+            except Exception:
+                return self._send(200, {"state": "unreachable"})
         if route == "/api/models":
             return self._send(200, list_models())
         if route == "/api/busy":

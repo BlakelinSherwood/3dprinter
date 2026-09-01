@@ -201,6 +201,17 @@
   #badge { position: absolute; top: 12px; right: 14px; color: var(--dim);
            font-size: 12px; background: rgba(20,22,26,.7); padding: 4px 10px;
            border-radius: 6px; }
+  #tpui { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
+          display: flex; align-items: center; gap: 12px;
+          background: rgba(20,22,26,.85); backdrop-filter: blur(8px);
+          border: 1px solid var(--edge); border-radius: 10px; padding: 8px 14px; }
+  #tpui[hidden] { display: none; }
+  #tplayer { width: 260px; accent-color: var(--accent); }
+  #tplabel { color: var(--dim); font-size: 12px; min-width: 130px;
+             font-variant-numeric: tabular-nums; }
+  #tplive { color: #ffb224; font-size: 12px; font-weight: 700;
+            display: flex; align-items: center; gap: 5px; }
+  #tpclose { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -333,6 +344,9 @@
             <button id="reslice" class="tiny" hidden>re-slice</button>
           </div>
           <div id="est"></div>
+          <div class="row" style="margin-top:8px">
+            <button id="tpbtn" disabled title="See the actual printing toolpath, layer by layer — live while printing">&#128300; toolpath view</button>
+          </div>
           <details class="adv" id="printadv"><summary>Print options</summary>
             <div id="printset">
               <div class="field">
@@ -419,7 +433,15 @@
       <button id="furlgo" style="flex:0 0 70px">Import</button>
     </div>
   </div>
-  <div id="view"><div id="badge">drag to orbit &middot; scroll to zoom</div></div>
+  <div id="view">
+    <div id="badge">drag to orbit &middot; scroll to zoom</div>
+    <div id="tpui" hidden>
+      <div id="tplive" hidden><span class="dot busy"></span> LIVE</div>
+      <input type="range" id="tplayer" min="1" max="1" value="1">
+      <div id="tplabel"></div>
+      <button id="tpclose" title="Back to the solid model">&times; close</button>
+    </div>
+  </div>
   <script type="importmap">
   { "imports": {
       "three": "/static/vendor/three.module.min.js",
