@@ -290,8 +290,11 @@ function currentModel() {
 
 function activeStage() {
   if (!$('st1')) return 1;
-  if ($('st1').classList.contains('active') || $('st1').classList.contains('error')) return 1;
-  if ($('st2').classList.contains('active') || $('st2').classList.contains('error')) return 2;
+  for (const cls of ['working', 'active', 'error']) {
+    if ($('st1').classList.contains(cls)) return 1;
+    if ($('st2').classList.contains(cls)) return 2;
+    if ($('st3').classList.contains(cls)) return 3;
+  }
   return 3;
 }
 
@@ -392,6 +395,7 @@ for (const el of [$('st1'), $('st2'), $('st3')]) {
 
 function invalidateSlice(why) {
   if (state.sliced || state.uploaded) stageMsg(3, why + ' — slice again', 'dim');
+  if (typeof tp !== 'undefined' && (tp.on || tp.printed)) tpClear();
   state.sliced = false;
   state.uploaded = false;
   sliceMeta = null;
@@ -543,6 +547,7 @@ function setCustomOption(name, select) {
 }
 
 $('matlookup_btn').onclick = async () => {
+  if (busy) return;
   const query = $('matlookup').value.trim();
   if (!query) { log('type a filament name to look up', 'bad'); return; }
   setBusy(true);
@@ -567,7 +572,12 @@ $('matlookup_btn').onclick = async () => {
 (async () => {
   try {
     const meta = await (await fetch('/api/material_custom')).json();
-    if (meta.name) setCustomOption(meta.name, false);
+    if (meta.name) {
+      setCustomOption(meta.name, false);
+      let ps = null;
+      try { ps = JSON.parse(localStorage.getItem('studio.printset')); } catch {}
+      if (ps?.material === 'custom') $('ps_material').value = 'custom';
+    }
     if ($('ps_material').value === 'custom' && !meta.name)
       $('ps_material').value = 'pla';
     renderPrintsum();
@@ -806,6 +816,8 @@ $('findbtn').onclick = () => { $('finder').hidden = false; $('fq').focus(); };
 $('finderclose').onclick = () => { $('finder').hidden = true; };
 
 async function finderImport(printId, fileId, btn) {
+  if (busy) return;
+  setBusy(true);
   if (btn) { btn.disabled = true; btn.textContent = 'importing…'; }
   try {
     const res = await apiJob('/api/model_import', { id: printId, file_id: fileId });
@@ -814,6 +826,7 @@ async function finderImport(printId, fileId, btn) {
     log(e.message, 'bad');
     if (btn) { btn.disabled = false; btn.textContent = 'import'; }
   }
+  setBusy(false);
 }
 
 async function afterFinderImport(res) {
@@ -824,6 +837,7 @@ async function afterFinderImport(res) {
       (a.license ? ` · ${a.license}` : ''), 'ok');
   if (a.url) log(`source: ${a.url}`, 'dim');
   $('scale').value = 1;
+  rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
   await refreshModels(res.model);
   await doGenerate();
   stageMsg(1, `imported "${a.title || res.model}"`, 'ok');
@@ -895,7 +909,14 @@ function renderResults(items) {
           filesBox.appendChild(row);
         }
       } catch (e) {
-        filesBox.innerHTML = `<div class="frow"><span class="qname">${e.message}</span></div>`;
+        filesBox.textContent = '';
+        const row = document.createElement('div');
+        row.className = 'frow';
+        const msg = document.createElement('span');
+        msg.className = 'qname';
+        msg.textContent = e.message;
+        row.appendChild(msg);
+        filesBox.appendChild(row);
       }
     };
     box.appendChild(card);
@@ -908,7 +929,14 @@ async function doSearch() {
   $('fgo').disabled = true;
   $('fresults').innerHTML = '<div class="fsub" style="padding:10px 0">searching…</div>';
   try { renderResults(await api('/api/search', { query })); }
-  catch (e) { $('fresults').innerHTML = `<div class="fsub" style="padding:10px 0">${e.message}</div>`; }
+  catch (e) {
+    $('fresults').textContent = '';
+    const div = document.createElement('div');
+    div.className = 'fsub';
+    div.style.padding = '10px 0';
+    div.textContent = e.message;
+    $('fresults').appendChild(div);
+  }
   $('fgo').disabled = false;
 }
 $('fgo').onclick = doSearch;
@@ -1006,6 +1034,7 @@ function renderBpViews() {
 }
 
 $('bpgo').onclick = async () => {
+  if (busy) return;
   const views = bpViews.filter(v => v.label !== 'ignore' && v.label !== 'top')
     .map(v => ({ image: v.image, label: v.label }));
   if (!views.some(v => v.label === 'front')) {
@@ -1020,6 +1049,8 @@ $('bpgo').onclick = async () => {
     const res = await apiJob('/api/multiview', { views, name }, 'gen3d');
     ok = true;
     $('bp').hidden = true;
+    $('scale').value = 1;
+    rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
     showResult(res);
     state.generated = true;
@@ -1031,6 +1062,7 @@ $('bpgo').onclick = async () => {
 };
 
 $('aigo').onclick = async () => {
+  if (busy) return;
   const prompt = $('aiprompt').value.trim();
   if (!aiphotoData && !prompt) { log('pick a photo or type a description for AI 3D', 'bad'); return; }
   setBusy(true);
@@ -1042,6 +1074,8 @@ $('aigo').onclick = async () => {
       image: aiphotoData?.data, image_name: aiphotoData?.name, prompt: prompt || null }, 'gen3d');
     ok = true;
     $('finder').hidden = true;
+    $('scale').value = 1;
+    rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
     showResult(res);
     state.generated = true;
@@ -1068,7 +1102,8 @@ async function doDescribe(mode) {
   let describeOk = false;
   try {
     const res = await apiJob('/api/describe', { mode, model, description, image: photo,
-      focus: mode === 'edit' ? focus : null }, 'describe');
+      focus: mode === 'edit' && focus
+        ? { ...focus, scale: $('scale').value || '1', rot } : null }, 'describe');
     describeOk = true;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
@@ -1095,6 +1130,8 @@ async function doDescribe(mode) {
 async function doGenerate() {
   const name = $('model').value;
   if (!name) return;
+  const wasBusy = busy;
+  if (!wasBusy) setBusy(true);
   const prevOp = progOp; progOp = 'generate';
   log(`generate ${name} ` + JSON.stringify(currentParams()), 'dim');
   updateStages();
@@ -1106,6 +1143,7 @@ async function doGenerate() {
     stageMsg(2, '');
   } catch (e) { log(e.message, 'bad'); }
   progOp = prevOp;
+  if (!wasBusy) setBusy(false);
   updateStages();
 }
 
@@ -1217,6 +1255,7 @@ $('scale').onchange = () => {
   if (!busy) doGenerate();
 };
 $('model').onchange = () => {
+  if (tp.printed || tp.on) tpClear();
   $('scale').value = 1;
   rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
   const m = currentModel();
@@ -1278,7 +1317,8 @@ $('orientbtn').onclick = async () => {
   startProgress('orient', `finding the best orientation for ${model}`, 20);
   let ok = false;
   try {
-    const res = await apiJob('/api/auto_orient', { model }, 'orient');
+    const res = await apiJob('/api/auto_orient',
+      { model, scale: $('scale').value || '1', rot }, 'orient');
     ok = true;
     showResult(res);
     state.generated = true;
@@ -1615,7 +1655,8 @@ async function openToolpath(name) {
 
 $('tpbtn').onclick = () => {
   if (tp.on) tpClear();
-  else openToolpath($('model').value);
+  else openToolpath($('model').value)
+    .catch((e) => { log('toolpath view failed: ' + e.message, 'bad'); tpClear(); });
 };
 $('tpclose').onclick = tpClear;
 $('tplayer').addEventListener('input', () => {
@@ -1638,7 +1679,13 @@ updateStages = function () {
 // ---------------------------- init ----------------------------
 (async function init() {
   setMode('new');
-  await refreshModels();
+  try {
+    await refreshModels();
+  } catch (e) {
+    log('could not load models (server starting?) — retrying…', 'bad');
+    await new Promise((r) => setTimeout(r, 2500));
+    await refreshModels().catch(() => log('still unreachable — reload the page', 'bad'));
+  }
   if (models.length) {
     $('model').value = models[0].name;
     $('model').title = models[0].summary || '';
@@ -1663,8 +1710,8 @@ updateStages = function () {
       endProgress(true);
       if (res && res.model) {
         await refreshModels(res.model);
-        showResult(res);
-        state.generated = true;
+        if (res.bbox) { showResult(res); state.generated = true; }
+        else await doGenerate();
         stageMsg(1, `${res.model} ready (finished while you were away)`, 'ok');
       }
     } catch (e) {

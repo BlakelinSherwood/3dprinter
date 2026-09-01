@@ -690,8 +690,8 @@ def describe(mode, name, description, image=None, focus=None):
                 # code loads the RAW mesh file, so invert the whole chain.
                 import numpy as np
                 p = np.array([float(v) for v in focus["point"]])
-                scale_f = float(focus.get("scale") or 1.0)
-                rot_f = focus.get("rot")
+                scale_f, _ = parse_scale(focus.get("scale") or 1.0)
+                rot_f = norm_rot(focus.get("rot"))
                 tris_t = tris.copy()
                 M = R = None
                 marker = IMPORTS / f"{name}.orient.json"
@@ -2118,7 +2118,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/auto_orient":
                 return self._send(200, start_job(
                     auto_orient, req["model"],
-                    float(req.get("scale") or 1.0), req.get("rot")))
+                    req.get("scale") or 1.0, req.get("rot")))
             if self.path == "/api/make_printable":
                 return self._send(200, start_job(
                     make_printable, req["model"],

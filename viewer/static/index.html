@@ -172,10 +172,10 @@
     border: 1px solid var(--edge); border-radius: 12px;
     box-shadow: 0 14px 44px rgba(0,0,0,.55);
   }
-  #finderhead { display: flex; align-items: center; gap: 10px;
+  #finderhead, #bphead { display: flex; align-items: center; gap: 10px;
     padding: 12px 14px; border-bottom: 1px solid var(--edge); }
-  #finderhead .sub { flex: 1; color: var(--dim); font-size: 11px; }
-  #finderhead button { flex: 0 0 28px; padding: 3px 0; }
+  #finderhead .sub, #bphead .sub { flex: 1; color: var(--dim); font-size: 11px; }
+  #finderhead button, #bphead button { flex: 0 0 28px; padding: 3px 0; }
   #finderquery, #finderurl, #finderai { padding: 10px 14px; margin: 0; }
   #finderurl, #finderai { border-top: 1px solid var(--edge); }
   #finderai input[type=text] { padding: 7px 9px; background: var(--bg);
@@ -430,7 +430,7 @@
     Claude, with explicit approval, after a first-layer check.</footer>
   </div>
   <div id="bp" hidden>
-    <div id="finderhead">
+    <div id="bphead">
       <b>Blueprint views</b>
       <span class="sub">label each view &middot; front is required</span>
       <button id="bpclose" title="Close">&times;</button>
