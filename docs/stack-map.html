@@ -1,0 +1,213 @@
+<title>Stack &amp; Connections</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #eaeef0; --surface: #f8fafa; --sunk: #e0e5e7;
+    --ink: #1b2529; --dim: #5d686e; --edge: #d3dadd;
+    --accent: #0e7a72;
+    --ok: #2f7d4f; --ok-bg: #e2efe7;
+    --tok: #9a6200; --tok-bg: #f4ecd8;
+    --paid: #6a48a3; --paid-bg: #ece5f6;
+    --plumb: #45596a; --plumb-bg: #e2e8ec;
+    --mac: #0e7a72; --pi: #b5482e; --cloud: #4a6ea8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #10161a; --surface: #19222a; --sunk: #0e151a;
+      --ink: #e6ecee; --dim: #93a0a7; --edge: #283640;
+      --accent: #45c2b4;
+      --ok: #55c98d; --ok-bg: #13251c;
+      --tok: #ffb638; --tok-bg: #2a2213;
+      --paid: #b491e6; --paid-bg: #211a30;
+      --plumb: #8aa0b0; --plumb-bg: #172029;
+      --mac: #45c2b4; --pi: #f0876b; --cloud: #8fb0e0;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #10161a; --surface: #19222a; --sunk: #0e151a;
+    --ink: #e6ecee; --dim: #93a0a7; --edge: #283640;
+    --accent: #45c2b4;
+    --ok: #55c98d; --ok-bg: #13251c;
+    --tok: #ffb638; --tok-bg: #2a2213;
+    --paid: #b491e6; --paid-bg: #211a30;
+    --plumb: #8aa0b0; --plumb-bg: #172029;
+    --mac: #45c2b4; --pi: #f0876b; --cloud: #8fb0e0;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink);
+         font: 16px/1.55 "IBM Plex Sans", system-ui, sans-serif;
+         -webkit-text-size-adjust: 100%; }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 34px 18px 60px; }
+  h1, h2, .znm, .flowlabel { font-family: "Archivo", system-ui, sans-serif; }
+  .kicker { font-family: "IBM Plex Mono", monospace; font-size: .74rem;
+            letter-spacing: .1em; text-transform: uppercase; color: var(--accent); }
+  h1 { font-size: 2.1rem; font-weight: 700; margin: 8px 0 0; letter-spacing: -.3px;
+       text-wrap: balance; }
+  .lede { color: var(--dim); margin-top: 10px; max-width: 62ch; }
+  h2 { font-size: 1.15rem; font-weight: 600; margin: 36px 0 12px; }
+
+  /* legend */
+  .legend { display: flex; flex-wrap: wrap; gap: 8px 16px; margin: 18px 0 4px;
+            font-size: .82rem; color: var(--dim); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+  .dot.ok { background: var(--ok); } .dot.tok { background: var(--tok); }
+  .dot.paid { background: var(--paid); } .dot.plumb { background: var(--plumb); }
+
+  /* zones */
+  .zone { background: var(--surface); border: 1px solid var(--edge);
+          border-radius: 14px; padding: 4px 16px 16px; margin: 14px 0;
+          border-left: 4px solid var(--zc, var(--accent)); }
+  .zone.mac { --zc: var(--mac); } .zone.pi { --zc: var(--pi); } .zone.cloud { --zc: var(--cloud); }
+  .zonehd { display: flex; align-items: baseline; gap: 10px; padding: 14px 0 4px; }
+  .znm { font-size: 1.05rem; font-weight: 700; color: var(--zc, var(--ink)); letter-spacing: .2px; }
+  .zsub { font-family: "IBM Plex Mono", monospace; font-size: .72rem; color: var(--dim); }
+  .nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+           gap: 9px; margin-top: 8px; }
+  .node { background: var(--sunk); border: 1px solid var(--edge); border-radius: 9px;
+          padding: 10px 12px; position: relative; }
+  .node .nm { font-weight: 600; font-size: .92rem; display: flex; align-items: center; gap: 7px; }
+  .node .rl { color: var(--dim); font-size: .8rem; margin-top: 2px; }
+  .node .au { font-family: "IBM Plex Mono", monospace; font-size: .68rem;
+              color: var(--dim); margin-top: 6px; display: block; overflow-wrap: anywhere; }
+  .badge { margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: .62rem;
+           padding: 2px 6px; border-radius: 4px; white-space: nowrap; }
+  .badge.ok { background: var(--ok-bg); color: var(--ok); }
+  .badge.tok { background: var(--tok-bg); color: var(--tok); }
+  .badge.paid { background: var(--paid-bg); color: var(--paid); }
+  .badge.plumb { background: var(--plumb-bg); color: var(--plumb); }
+
+  /* flow pipeline */
+  .flow { background: var(--surface); border: 1px solid var(--edge); border-radius: 14px;
+          padding: 18px 16px; margin: 14px 0; }
+  .pipe { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; }
+  .stage { flex: 1 1 92px; min-width: 92px; background: var(--sunk);
+           border: 1px solid var(--edge); border-radius: 9px; padding: 10px 11px;
+           position: relative; }
+  .flowlabel { font-size: .84rem; font-weight: 600; }
+  .stage small { display: block; color: var(--dim); font-size: .72rem; margin-top: 2px;
+                 font-family: "IBM Plex Mono", monospace; }
+  .stage.gate { border-color: var(--ok); }
+  .stage.gate .flowlabel { color: var(--ok); }
+  .arrow { align-self: center; color: var(--dim); font-weight: 700; flex: 0 0 auto; }
+  .flownote { color: var(--dim); font-size: .82rem; margin-top: 12px; }
+
+  /* dependency rows */
+  .deps { display: grid; gap: 8px; margin-top: 4px; }
+  .dep { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+         background: var(--surface); border: 1px solid var(--edge); border-radius: 10px;
+         padding: 11px 14px; }
+  .dep .trg { font-family: "IBM Plex Mono", monospace; font-size: .78rem; font-weight: 500;
+              color: var(--tok); white-space: nowrap; }
+  .dep .eff { font-size: .88rem; }
+  footer { color: var(--dim); font-size: .82rem; margin-top: 34px;
+           border-top: 1px solid var(--edge); padding-top: 16px; }
+  code { font-family: "IBM Plex Mono", monospace; font-size: .84em; background: var(--sunk);
+         border: 1px solid var(--edge); border-radius: 4px; padding: .05em .35em; }
+</style>
+
+<div class="wrap">
+  <div class="kicker">3D printing pipeline · architecture</div>
+  <h1>Stack &amp; Connections</h1>
+  <p class="lede">Every moving piece of your setup and how they link — the three places
+  things run, what talks to what, and what stops working if a link goes down.</p>
+
+  <div class="legend">
+    <span><span class="dot ok"></span> working now</span>
+    <span><span class="dot tok"></span> needs a free token</span>
+    <span><span class="dot paid"></span> needs paid credits</span>
+    <span><span class="dot plumb"></span> plumbing (keep it running)</span>
+  </div>
+
+  <!-- ZONE: MAC -->
+  <div class="zone mac">
+    <div class="zonehd"><span class="znm">Your Mac</span><span class="zsub">Intel MacBook Pro</span></div>
+    <div class="nodes">
+      <div class="node"><div class="nm">Part Studio <span class="badge ok">:8434</span></div>
+        <div class="rl">The main app — design, slice, upload from the browser.</div></div>
+      <div class="node"><div class="nm">Claude Code + MCP <span class="badge ok">3dprint</span></div>
+        <div class="rl">Secondary interface; the <code>mcp-3d-printer-server</code> tools.</div></div>
+      <div class="node"><div class="nm">OrcaSlicer <span class="badge ok">CLI</span></div>
+        <div class="rl">Turns STL into G-code with your Ender profiles.</div></div>
+      <div class="node"><div class="nm">Blender <span class="badge ok">headless</span></div>
+        <div class="rl">"Make printable" — cleans up messy meshes.</div></div>
+      <div class="node"><div class="nm">claude CLI <span class="badge ok">login</span></div>
+        <div class="rl">Powers describe-to-build &amp; refine.</div>
+        <span class="au">needs a one-time /login</span></div>
+      <div class="node"><div class="nm">Relay <span class="badge plumb">:5051</span></div>
+        <div class="rl">Bridges the Mac to the Pi (works around a macOS block).</div></div>
+    </div>
+  </div>
+
+  <!-- ZONE: PI -->
+  <div class="zone pi">
+    <div class="zonehd"><span class="znm">Your Pi</span><span class="zsub">Raspberry Pi 3B+ · 10.0.0.112</span></div>
+    <div class="nodes">
+      <div class="node"><div class="nm">OctoPrint <span class="badge ok">:80</span></div>
+        <div class="rl">Runs the printer; receives uploads, reports temps.</div>
+        <span class="au">auth: OCTOPRINT_API_KEY</span></div>
+      <div class="node"><div class="nm">Ender 3 V2 <span class="badge ok">USB</span></div>
+        <div class="rl">The printer — plugged into the Pi, not the Mac.</div></div>
+      <div class="node"><div class="nm">Filament sensor <span class="badge plumb">soon</span></div>
+        <div class="rl">Wires to the Pi's GPIO. Arriving — install pending.</div></div>
+    </div>
+  </div>
+
+  <!-- ZONE: CLOUD -->
+  <div class="zone cloud">
+    <div class="zonehd"><span class="znm">Cloud services</span><span class="zsub">model sources &amp; AI generation</span></div>
+    <div class="nodes">
+      <div class="node"><div class="nm">Printables <span class="badge ok">keyless</span></div>
+        <div class="rl">Search &amp; import ready-made models.</div></div>
+      <div class="node"><div class="nm">Sketchfab <span class="badge tok">token</span></div>
+        <div class="rl">Search works; one-click import needs a free token.</div>
+        <span class="au">SKETCHFAB_API_TOKEN</span></div>
+      <div class="node"><div class="nm">Tripo <span class="badge paid">credits</span></div>
+        <div class="rl">Photo→3D, blueprint→3D. Key set, balance $0.</div>
+        <span class="au">TRIPO_API_KEY</span></div>
+      <div class="node"><div class="nm">Meshy <span class="badge plumb">off</span></div>
+        <div class="rl">Alternate AI generator — unused by choice (paid).</div></div>
+    </div>
+  </div>
+
+  <!-- FLOW -->
+  <h2>How a print flows through it all</h2>
+  <div class="flow">
+    <div class="pipe">
+      <div class="stage"><div class="flowlabel">Get a model</div><small>describe · photo · import</small></div>
+      <div class="arrow">→</div>
+      <div class="stage"><div class="flowlabel">STL</div><small>in the studio</small></div>
+      <div class="arrow">→</div>
+      <div class="stage"><div class="flowlabel">Slice</div><small>OrcaSlicer</small></div>
+      <div class="arrow">→</div>
+      <div class="stage gate"><div class="flowlabel">Safety gate</div><small>temps + volume</small></div>
+      <div class="arrow">→</div>
+      <div class="stage"><div class="flowlabel">Relay</div><small>:5051 → Pi</small></div>
+      <div class="arrow">→</div>
+      <div class="stage"><div class="flowlabel">Pi</div><small>upload only</small></div>
+      <div class="arrow">→</div>
+      <div class="stage"><div class="flowlabel">Printer</div><small>your yes first</small></div>
+    </div>
+    <p class="flownote">Nothing prints on upload, and Claude starts a print only with your
+    go-ahead and you present for the first layer — the safety gate and that rule sit right
+    in the middle of the flow on purpose.</p>
+  </div>
+
+  <!-- DEPENDENCIES -->
+  <h2>If this breaks, that stops</h2>
+  <div class="deps">
+    <div class="dep"><span class="trg">Relay down</span><span class="eff">Studio loses temps, upload, and live toolpath. (The MCP tools still reach the Pi — they go direct.)</span></div>
+    <div class="dep"><span class="trg">API key changes</span><span class="eff">Both the studio <em>and</em> the MCP tools lose all printer access — re-paste the new Pi key to Claude.</span></div>
+    <div class="dep"><span class="trg">claude logged out</span><span class="eff">Describe-to-build &amp; refine stop; import, slicing, and uploading keep working.</span></div>
+    <div class="dep"><span class="trg">OrcaSlicer missing</span><span class="eff">No slicing on either path — nothing can become G-code.</span></div>
+    <div class="dep"><span class="trg">Printer is on the Pi</span><span class="eff">The Mac can sleep for design/slice work, but a live print needs the Pi and relay up.</span></div>
+  </div>
+
+  <footer>
+    Verified against <code>.mcp.json</code>, the studio source, and your live config on
+    2026-09-01. Detailed reference: <code>docs/stack-and-connections.md</code>. Turn-on
+    steps for the token/credits: <code>docs/activation-checklist.md</code>.
+  </footer>
+</div>
