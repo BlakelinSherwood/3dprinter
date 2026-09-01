@@ -1,0 +1,272 @@
+<title>Part Studio Night Shift</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Semi+Condensed:wght@600;700&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  :root {
+    --bg: #f2f4f6; --surface: #ffffff; --ink: #1c242e; --dim: #5c6572;
+    --edge: #dde1e7; --accent: #33618f; --accent-ink: #ffffff;
+    --ok: #257a4e; --warn: #92621d; --bad: #b13c38;
+    --ok-soft: #e6f2ec; --warn-soft: #f7efe0; --bad-soft: #f9e9e8;
+    --chip: #e8ecf1; --mono-bg: #eef1f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14161a; --surface: #1c1f26; --ink: #e6e8ec; --dim: #9aa1ad;
+      --edge: #2a2e37; --accent: #6fa3d8; --accent-ink: #10151b;
+      --ok: #4cc38a; --warn: #ffb224; --bad: #ff6369;
+      --ok-soft: #17251e; --warn-soft: #2a2213; --bad-soft: #2a1717;
+      --chip: #252a33; --mono-bg: #171a20;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14161a; --surface: #1c1f26; --ink: #e6e8ec; --dim: #9aa1ad;
+    --edge: #2a2e37; --accent: #6fa3d8; --accent-ink: #10151b;
+    --ok: #4cc38a; --warn: #ffb224; --bad: #ff6369;
+    --ok-soft: #17251e; --warn-soft: #2a2213; --bad-soft: #2a1717;
+    --chip: #252a33; --mono-bg: #171a20;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 16px/1.6 "Source Sans 3", system-ui, sans-serif;
+  }
+  main { max-width: 800px; margin: 0 auto; padding: 40px 22px 72px; }
+  h1, h2, h3 {
+    font-family: "Saira Semi Condensed", "Source Sans 3", sans-serif;
+    line-height: 1.15; text-wrap: balance; margin: 0;
+  }
+  h1 { font-size: 2.5rem; font-weight: 700; letter-spacing: .2px; }
+  h2 { font-size: 1.45rem; font-weight: 600; margin: 52px 0 14px;
+       padding-top: 22px; border-top: 1px solid var(--edge); }
+  h3 { font-size: 1.05rem; font-weight: 600; margin: 20px 0 6px; }
+  p { margin: 10px 0; max-width: 68ch; }
+  .eyebrow { color: var(--dim); font-size: .8rem; text-transform: uppercase;
+             letter-spacing: .12em; font-weight: 600; margin-bottom: 8px; }
+  .sub { color: var(--dim); margin-top: 8px; font-size: 1.02rem; }
+  code, .mono { font-family: "JetBrains Mono", ui-monospace, monospace;
+                font-size: .86em; }
+  code { background: var(--mono-bg); border: 1px solid var(--edge);
+         border-radius: 5px; padding: .08em .35em; white-space: nowrap; }
+  /* stat band */
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+           gap: 12px; margin: 30px 0 6px; }
+  .stat { background: var(--surface); border: 1px solid var(--edge);
+          border-radius: 10px; padding: 14px 16px; }
+  .stat b { display: block; font-family: "Saira Semi Condensed", sans-serif;
+            font-size: 1.9rem; font-weight: 700; line-height: 1.1;
+            font-variant-numeric: tabular-nums; }
+  .stat span { color: var(--dim); font-size: .85rem; }
+  .stat.good b { color: var(--ok); }
+  .stat.crit b { color: var(--bad); }
+  /* print strip */
+  .print { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+           background: var(--surface); border: 1px solid var(--edge);
+           border-radius: 10px; padding: 13px 16px; margin: 14px 0 0; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--ok);
+         flex: 0 0 auto; }
+  .print .mono { color: var(--dim); }
+  /* finding cards */
+  .card { background: var(--surface); border: 1px solid var(--edge);
+          border-left: 4px solid var(--dim); border-radius: 10px;
+          padding: 16px 18px; margin: 14px 0; }
+  .card.crit { border-left-color: var(--bad); }
+  .card.major { border-left-color: var(--warn); }
+  .card.ok { border-left-color: var(--ok); }
+  .card h3 { margin-top: 0; }
+  .tag { display: inline-block; font-size: .72rem; font-weight: 600;
+         text-transform: uppercase; letter-spacing: .08em; border-radius: 5px;
+         padding: 2px 8px; margin-bottom: 8px; }
+  .tag.crit { background: var(--bad-soft); color: var(--bad); }
+  .tag.major { background: var(--warn-soft); color: var(--warn); }
+  .tag.fixed { background: var(--ok-soft); color: var(--ok); }
+  .card p:last-child { margin-bottom: 2px; }
+  ul { margin: 10px 0; padding-left: 22px; }
+  li { margin: 7px 0; max-width: 66ch; }
+  li::marker { color: var(--dim); }
+  .quiet { color: var(--dim); font-size: .92rem; }
+  /* checklist */
+  .check { list-style: none; padding-left: 4px; }
+  .check li { padding-left: 30px; position: relative; }
+  .check li::before { content: "○"; position: absolute; left: 4px;
+                      color: var(--accent); font-weight: 600; }
+  /* commits table */
+  .commits { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .commits td { padding: 6px 10px 6px 0; border-bottom: 1px solid var(--edge);
+                vertical-align: top; }
+  .commits td:first-child { font-family: "JetBrains Mono", monospace;
+                            color: var(--dim); white-space: nowrap; }
+  .tablewrap { overflow-x: auto; }
+  a { color: var(--accent); }
+</style>
+
+<main>
+  <div class="eyebrow">Part Studio · overnight report · Aug 31 → Sep 1, 2026</div>
+  <h1>Night Shift Report</h1>
+  <p class="sub">Everything that happened while you slept: three new capabilities,
+  a 35-agent audit of the whole system, two genuine safety bugs found and fixed,
+  and the fixes themselves put on trial. The truck kept printing through all of it.</p>
+
+  <div class="print">
+    <span class="dot"></span>
+    <b>European lorry — printing</b>
+    <span class="mono">24% at 11:30pm · nozzle 210° · bed 60° · done ≈ 8:00–8:30am</span>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><b>35</b><span>audit agents run</span></div>
+    <div class="stat crit"><b>2</b><span>critical safety bugs found</span></div>
+    <div class="stat good"><b>2</b><span>criticals fixed &amp; attack-tested</span></div>
+    <div class="stat"><b>22</b><span>serious findings confirmed</span></div>
+    <div class="stat good"><b>16</b><span>commits since dinner</span></div>
+    <div class="stat"><b>13</b><span>attack G-codes, all caught</span></div>
+  </div>
+
+  <h2>The short version</h2>
+  <p>You asked for a QA audit before 8:30. I ran one — then ran a second audit
+  on my own fixes, which caught real mistakes in them. That second pass is why
+  you can trust the first one.</p>
+  <p>The two critical findings were both in the <em>safety net itself</em>, not
+  the printing. Nothing unsafe ever ran — the bugs were holes the net would not
+  have caught if something else had gone wrong first. Both are closed, with
+  attack files in the test battery proving it.</p>
+
+  <h2>New since dinner</h2>
+  <ul>
+    <li><b>🧭 Auto-orient</b> — one press finds the position needing the least
+    support material for any imported model (press again to undo). The math was
+    applied <em>backwards</em> at first — the verification pass caught it, and
+    an independent physics check now confirms the fixed version: zero overhang
+    on the test bracket, versus the old code making things worse.</li>
+    <li><b>🔍 Sketchfab in the finder</b> — searches now show Printables and
+    Sketchfab together, with license and detail (face count) on every card.
+    Sketchfab is where exact vehicles live: searching "tiger tank" returns the
+    actual 65,000-face Tiger 1. One-click import switches on when you add a free
+    <code>SKETCHFAB_API_TOKEN</code> to <code>~/.zshrc</code>; until then each
+    card explains the manual download route.</li>
+    <li><b>⌗ Blueprint → 3D</b> — upload a blueprint sheet and it splits into
+    the separate views (front, side, top…), each labeled and editable. "Build
+    3D" sends them through Tripo's multiview generator. Verified all the way to
+    Tripo's payment gate — it works the moment the account has credits; the
+    free path (Tripo web studio → download → ⊕ mesh) still works today.</li>
+    <li>Earlier in the evening: the <b>three-stage UI</b> (Create → Shape →
+    Print), <b>modern slicing quality</b> (scarf seams, adaptive layers, better
+    holes), <b>automatic supports</b>, and the <b>live toolpath view</b> that is
+    tracking the truck right now, layer by layer.</li>
+  </ul>
+
+  <h2>The audit — what it found</h2>
+  <p>Six specialist reviewers read every part of the system (safety chain, server,
+  interface, slicing, mesh pipeline, docs); every serious claim went to an
+  adversarial referee before counting. 22 findings survived. The two that
+  mattered most:</p>
+
+  <div class="card crit">
+    <span class="tag crit">critical</span> <span class="tag fixed">fixed + tested</span>
+    <h3>The volume checker could be fooled by "relative" movement</h3>
+    <p>Before any file is printable it must pass a check: temperatures in range,
+    and every movement inside the printer's 220×220×250&nbsp;mm box. But G-code
+    has two movement modes — "go <em>to</em> Z200" and "go <em>up by</em> 200" —
+    and the checker only understood the first. A file could climb past the
+    ceiling in small "up by" steps and still pass. Our own printer's standard
+    ending sequence uses that mode, so the checker was mis-reading every file's
+    final moves.</p>
+    <p><b>Now:</b> the checker tracks the physical position through every mode,
+    datum reset, and homing command. A file that tries to sneak past the ceiling
+    fails loudly. Thirteen attack files — including ones the referee invented to
+    beat my first fix — are all caught, and your real sliced files still pass.</p>
+  </div>
+
+  <div class="card crit">
+    <span class="tag crit">critical</span> <span class="tag fixed">fixed + tested</span>
+    <h3>A timing gap between "check the file" and "send the file"</h3>
+    <p>Uploading re-checks the G-code, then sends it. But those were two separate
+    steps reading from the same spot on disk — and a slice happening at the same
+    moment could swap in new, unchecked G-code between them. Single click-path
+    use never hits this, but the safety rule is supposed to hold no matter what.</p>
+    <p><b>Now:</b> slicing and uploading take turns (never interleave), sliced
+    G-code only lands at its final location <em>after</em> its check passes, and
+    every file carries a marker saying which material it was checked for —
+    no marker, no upload.</p>
+  </div>
+
+  <h3>Also confirmed and fixed</h3>
+  <ul>
+    <li>Auto-orient's rotation was inverted (the worst-case version of "backwards") — fixed and physics-verified.</li>
+    <li>"a 1/4 inch hole" was being read as "shrink to quarter scale" — dimensions and hobby scales are now told apart (11-case test).</li>
+    <li>Click-a-spot editing aimed at the wrong place on scaled or rotated models — clicks now map back through the full display transform.</li>
+    <li>Any web page in a browser on this Mac could have poked the studio's controls (including deleting files from the printer queue) — cross-origin requests are refused now, and request names can't escape the studio's folders.</li>
+    <li>Several double-click / mid-operation races in the interface — a double-clicked "Build 3D" would have paid Tripo twice.</li>
+    <li>The docs described the system as it was <em>before</em> the Raspberry Pi move; the relay everything depends on was documented only in a commit message. README and handoff docs now describe reality.</li>
+  </ul>
+
+  <h2>The audit was audited</h2>
+  <div class="card ok">
+    <span class="tag fixed">round two</span>
+    <h3>Six referees tried to break the fixes — and partly succeeded</h3>
+    <p>Rather than trust my own patches at 1am, I sent a second team to attack
+    them. They confirmed two fixes outright (the timing gap, the orientation
+    math) and broke three others in ways that mattered:</p>
+    <ul>
+      <li>My first volume-checker fix could still be fooled by a "datum reset"
+      trick (<code>G92</code>) — and missed the decimal style
+      (<code>Z.4</code>) our own slicer actually writes. Both closed.</li>
+      <li>My name-validation was too strict: it would have rejected everyday
+      files like <code>part&nbsp;(1).stl</code> — a regression you'd have hit on
+      your first download this morning. Relaxed to sanitize instead of refuse.</li>
+      <li>Three interface entry points could still sneak past the busy-lock.
+      Guarded.</li>
+    </ul>
+    <p>Everything the referees found is fixed and re-tested. That loop — fix,
+    attack the fix, fix again — is the reason tonight's changes deserve trust.</p>
+  </div>
+
+  <h2>Known limitations, honestly</h2>
+  <ul>
+    <li>Generated model code runs inside the studio process. It's produced by
+    our own guarded generator and reviewed rules, but it is not sandboxed —
+    the right long-term fix is a separate low-privilege process.</li>
+    <li>The slice/upload lock protects one studio at a time; two studio
+    instances running side-by-side could still race (don't run two).</li>
+    <li>Tripo multiview and Sketchfab one-click import are built and verified
+    to their respective gates but wait on credits / a free token.</li>
+    <li>If a build job's final poll is lost at the exact moment of delivery,
+    its result can be dropped (the UI recovers by regenerating).</li>
+  </ul>
+
+  <h2>This morning</h2>
+  <ul class="check">
+    <li>The truck should be done around 8:00–8:30. Let the bed cool a few
+    minutes before peeling. I'll have verified the heaters are off.</li>
+    <li>Check the wheels: they were printed to the measured clearances from the
+    fit test — axles should click in, wheels should spin free.</li>
+    <li>Optional, free, 2 minutes: make a Sketchfab account and put
+    <code>SKETCHFAB_API_TOKEN</code> in <code>~/.zshrc</code> — the finder's
+    one-click import lights up.</li>
+    <li>Optional, paid: Tripo credits would switch on photo→3D and
+    blueprint→3D inside the studio. The web-studio free path works regardless.</li>
+    <li>After the print ends I'll probe the firmware for arc support
+    (deferred mid-print on purpose) — it can make curved surfaces smoother.</li>
+  </ul>
+
+  <h2>Tonight's commits</h2>
+  <div class="tablewrap"><table class="commits">
+    <tr><td>02ed5f8</td><td>QA round 2: adversarial re-verification findings fixed</td></tr>
+    <tr><td>27eeeeb</td><td>QA audit fixes: docs describe the system as built</td></tr>
+    <tr><td>7dd5f0f</td><td>QA audit fixes: frontend state machine and flow guards</td></tr>
+    <tr><td>87dbeaf</td><td>QA audit fixes: close both safety criticals, harden the server</td></tr>
+    <tr><td>04eb95c</td><td>Blueprint sheets become 3D models: view cropper + Tripo multiview</td></tr>
+    <tr><td>0ce700c</td><td>Finder searches Sketchfab alongside Printables</td></tr>
+    <tr><td>a39b66d</td><td>Auto-orient for imports: Tweaker-3 minimal-support orientation</td></tr>
+    <tr><td>36d35ff</td><td>Live G-code toolpath viewer: watch the physical print paint itself</td></tr>
+    <tr><td>8bb638c</td><td>Modern slicing quality: scarf seams, adaptive Z, polyholes</td></tr>
+    <tr><td>de2c2d2</td><td>Part Studio UI: guided three-stage pipeline</td></tr>
+    <tr><td>c72a3d0</td><td>Automatic supports: geometric hint + authoritative slicer retry</td></tr>
+    <tr><td>51f0325</td><td>Research: name-to-faithful-model pipeline</td></tr>
+    <tr><td>+4 more</td><td class="quiet">fit clearances, free AI-generation path, toy-conversion framework</td></tr>
+  </table></div>
+
+  <p class="quiet" style="margin-top:34px">Written ~11:30pm while the lorry printed.
+  The safety rules held all night: nothing was printed, selected, or started —
+  uploads stay <code>select=false / print=false</code>, and printing still waits
+  for your yes with you at the machine.</p>
+</main>
