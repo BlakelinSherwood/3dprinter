@@ -328,12 +328,16 @@ def finish_mesh_tris(tris, name, scale, scale_label, rot, warnings):
         warnings.append("tall part with a small footprint - consider enabling Brim")
     OUTPUT.mkdir(exist_ok=True)
     write_stl(OUTPUT / f"{name}.stl", tris)
+    support = support_analysis(OUTPUT / f"{name}.stl")
+    if support["needs_supports"]:
+        warnings.append("may need supports (" + "; ".join(support["reasons"]) + ") - the slicer decides and will auto-enable them if required")
     return {
         "stl": f"/output/{name}.stl",
         "bbox": [round(float(d), 2) for d in dims],
         "volume_cm3": round(mesh_volume(tris) / 1000.0, 2),
         "scale": scale,
         "scale_label": scale_label,
+        "support": support,
         "warnings": warnings,
     }
 
@@ -401,6 +405,76 @@ if __name__ == "__main__":
 
 
 SCALE_MENTION_RE = re.compile(r"\b1\s*[/:]\s*(\d{1,4})\b")
+
+
+def support_analysis(stl_path):
+    """Decide whether a sliced part needs supports, from the geometry itself.
+
+    Two independent signals:
+    - floating bodies: connected components whose lowest point never reaches
+      the bed (a rotated star's arms, a figurine's outstretched hand)
+    - steep overhang area: downward-facing surface steeper than 45 degrees
+      that is not the first layer
+    Returns a machine-usable verdict plus human-readable reasons.
+    """
+    try:
+        import numpy as np
+        import trimesh
+        m = trimesh.load(str(stl_path), force="mesh")
+        lo_z = float(m.bounds[0][2])
+        reasons = []
+        # A region only truly floats if there is AIR all the way down: parts
+        # resting on other parts (print-in-place wheels on cradles, hinge
+        # pins on chassis) are supported by design. Ray-cast straight down
+        # from each candidate and measure the drop.
+        def drop_to_ground(points):
+            pts = np.asarray(points, dtype=float)
+            hits = np.full(len(pts), np.inf)
+            origins = pts + [0, 0, -0.05]
+            locs, ray_idx, _ = m.ray.intersects_location(
+                origins, np.tile([0.0, 0.0, -1.0], (len(pts), 1)),
+                multiple_hits=False)
+            for l, r in zip(locs, ray_idx):
+                hits[r] = min(hits[r], origins[r][2] - l[2])
+            bed_drop = pts[:, 2] - lo_z
+            return np.minimum(hits, bed_drop)
+
+        floating = 0
+        for body in m.split(only_watertight=False):
+            bz = float(body.bounds[0][2])
+            if bz <= lo_z + 0.4:
+                continue        # touches the bed
+            low_pts = body.vertices[body.vertices[:, 2] < bz + 0.5][:40]
+            if len(low_pts) and float(np.min(drop_to_ground(low_pts))) > 1.0:
+                floating += 1
+        if floating:
+            reasons.append(f"{floating} loose region" + ("s" if floating > 1 else ""))
+        # Steep unsupported ceiling: downward faces above the first layer
+        # with a long empty drop beneath them.
+        n = m.face_normals
+        tri_z = m.triangles[:, :, 2]
+        steep = (n[:, 2] < -0.72) & (tri_z.max(axis=1) > lo_z + 0.35)
+        area = 0.0
+        idx = np.flatnonzero(steep)
+        if len(idx):
+            if len(idx) > 300:
+                idx = idx[np.linspace(0, len(idx) - 1, 300).astype(int)]
+            centers = m.triangles[idx].mean(axis=1)
+            drops = drop_to_ground(centers)
+            unsupported = drops > 1.0
+            # scale the sampled verdict back to the full steep area
+            frac = float(unsupported.mean()) if len(drops) else 0.0
+            area = float(m.area_faces[steep].sum()) * frac
+        if area > 150.0:
+            reasons.append(f"~{area/100:.1f}cm2 of overhang with nothing beneath")
+        return {"needs_supports": bool(floating or area > 150.0),
+                "floating_bodies": floating,
+                "overhang_cm2": round(area / 100.0, 1),
+                "reasons": reasons}
+    except Exception:
+        return {"needs_supports": False, "floating_bodies": 0,
+                "overhang_cm2": 0.0, "reasons": [],
+                "note": "analysis failed - relying on the slicer's own check"}
 
 
 def blockiness(stl_path):
@@ -748,12 +822,16 @@ def generate(name, params, scale=1.0, rot=None):
             warnings.append(
                 f"features estimated ~{t_est:.2f}mm thick - below the 0.88mm "
                 f"two-perimeter minimum, may slice incompletely")
+    support = support_analysis(OUTPUT / f"{name}.stl")
+    if support["needs_supports"]:
+        warnings.append("may need supports (" + "; ".join(support["reasons"]) + ") - the slicer decides and will auto-enable them if required")
     return {
         "stl": f"/output/{name}.stl",
         "bbox": [round(bb.xlen, 2), round(bb.ylen, 2), round(bb.zlen, 2)],
         "volume_cm3": round(vol / 1000.0, 2),
         "scale": scale,
         "scale_label": scale_label,
+        "support": support,
         "warnings": warnings,
     }
 
@@ -1064,11 +1142,30 @@ def do_slice(name, settings=None):
     if copies > 1:
         extra_env["REPETITIONS"] = str(copies)
     code, out = run_script(args, extra_env=extra_env)
+    supports_auto = False
+    if code != 0 and not settings.get("supports") and re.search(
+            r"floating regions|enable support", out, re.I):
+        # The slicer itself is the authority on floating geometry. When it
+        # refuses and supports were off, retry once with tree supports -
+        # that is the plug-and-play path a novice expects.
+        retry = dict(settings)
+        retry["supports"] = True
+        override = build_process_override(retry)
+        args = [str(REPO / "scripts/test-slice.sh"), str(stl), name]
+        if override:
+            args.append(str(override[0]))
+            changed = override[1]
+        code, out = run_script(args, extra_env=extra_env)
+        if code == 0:
+            supports_auto = True
+            changed = [c for c in changed if c != "tree supports"]
+            changed.append("tree supports AUTO-ENABLED (slicer found floating regions)")
     if code == 0:
         # The upload re-check must verify against the envelope this file was
         # sliced for, not assume PLA.
         (OUTPUT / f"{name}.material").write_text(material)
     result = {"ok": code == 0, "report": out, "overrides": changed,
+              "supports_auto": supports_auto,
               "gcode": f"output/{name}.gcode" if code == 0 else None}
     if code == 0:
         result["estimates"] = gcode_estimates(OUTPUT / f"{name}.gcode")
