@@ -1690,6 +1690,41 @@ def make_printable(name, voxel=0.8, target_mm=0.0):
     return result
 
 
+def solidify_scale(name, wall=1.6, target_mm=0.0, close_holes=True):
+    """Architectural prep: give an imported building's single-sided walls real
+    thickness (Solidify) and scale it to fit the bed. Chief Architect / SketchUp
+    exports come out as zero-thickness surfaces at full real-world size; this
+    turns one into a watertight, printable desk model."""
+    src = IMPORTS / f"{name}.stl"
+    if not src.is_file():
+        raise ValueError("solidify runs on imported models - select an import")
+    if not Path(BLENDER).is_file():
+        raise RuntimeError("Blender not found at /Applications/Blender.app - "
+                           "install it with: brew install --cask blender")
+    # default target: fit within the bed's 220x220x250 with a small margin
+    if not target_mm:
+        target_mm = 200.0
+    out_name = f"{name}_walls"
+    dst = IMPORTS / f"{out_name}.stl"
+    job = REPO / "scripts/bpy_solidify_scale.py"
+    p = subprocess.run(
+        [BLENDER, "--background", "--python", str(job), "--",
+         str(src), str(dst), str(wall), str(target_mm),
+         "1" if close_holes else "0"],
+        capture_output=True, text=True, timeout=600)
+    marker = [l for l in p.stdout.splitlines() if l.startswith("BPY_RESULT")]
+    if p.returncode != 0 or not dst.is_file() or not marker:
+        raise RuntimeError("Blender solidify failed:\n" + (p.stdout + p.stderr)[-600:])
+    att_src = IMPORTS / f"{name}.json"
+    att = json.loads(att_src.read_text()) if att_src.is_file() else {}
+    att["processed"] = f"walls solidified to {wall}mm, scaled to fit {target_mm:.0f}mm"
+    (IMPORTS / f"{out_name}.json").write_text(json.dumps(att, indent=2))
+    result = generate(out_name, {})
+    result["model"] = out_name
+    result["bpy"] = marker[0]
+    return result
+
+
 # ---- AI image/text -> 3D (Tripo or Meshy; key arrives via ~/.zshrc) ----
 def gen3d_provider():
     if os.environ.get("TRIPO_API_KEY"):
@@ -2218,6 +2253,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, start_job(
                     make_printable, req["model"],
                     float(req.get("voxel") or 0.8),
+                    float(req.get("target_mm") or 0)))
+            if self.path == "/api/solidify":
+                return self._send(200, start_job(
+                    solidify_scale, req["model"],
+                    float(req.get("wall") or 1.6),
                     float(req.get("target_mm") or 0)))
             if self.path == "/api/gen3d":
                 return self._send(200, start_job(

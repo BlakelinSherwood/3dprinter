@@ -364,6 +364,8 @@ function updateStages() {
   $('revert').disabled = busy || !(m && m.has_history);
   $('makeprint').hidden = !(m && m.imported);
   $('makeprint').disabled = busy;
+  $('solidify').hidden = !(m && m.imported);
+  $('solidify').disabled = busy;
   $('orientbtn').hidden = !(m && m.imported);
   $('orientbtn').disabled = busy;
   $('refine').disabled = busy || (m && m.imported);
@@ -738,7 +740,7 @@ function endProgress(ok) {
 let busy = false;
 function setBusy(b) {
   busy = b;
-  for (const id of ['buildnew', 'editsel', 'generate', 'refine', 'makeprint'])
+  for (const id of ['buildnew', 'editsel', 'generate', 'refine', 'makeprint', 'solidify'])
     $(id).disabled = b;
   updateStages();
 }
@@ -1313,6 +1315,25 @@ $('makeprint').onclick = async () => {
     state.generated = true;
     invalidateSlice('new model');
     log(`${res.model} ready — watertight and printable`, 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+$('solidify').onclick = async () => {
+  const model = $('model').value;
+  setBusy(true);
+  log(`solidifying walls for ${model} (architectural prep)…`, 'dim');
+  startProgress('bpy', `solidifying walls + scaling ${model}`, 60);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/solidify', { model }, 'bpy');
+    ok = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('new model');
+    log(`${res.model} ready — walls thickened, scaled to fit, watertight`, 'ok');
   } catch (e) { log(e.message, 'bad'); }
   endProgress(ok);
   setBusy(false);
