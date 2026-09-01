@@ -361,6 +361,8 @@ function updateStages() {
   $('revert').disabled = busy || !(m && m.has_history);
   $('makeprint').hidden = !(m && m.imported);
   $('makeprint').disabled = busy;
+  $('orientbtn').hidden = !(m && m.imported);
+  $('orientbtn').disabled = busy;
   $('refine').disabled = busy || (m && m.imported);
   $('refine').parentElement.style.display = (m && m.imported) ? 'none' : '';
   $('importnote').hidden = !(m && m.imported);
@@ -1175,6 +1177,25 @@ $('makeprint').onclick = async () => {
     state.generated = true;
     invalidateSlice('new model');
     log(`${res.model} ready — watertight and printable`, 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+$('orientbtn').onclick = async () => {
+  const model = $('model').value;
+  setBusy(true);
+  startProgress('orient', `finding the best orientation for ${model}`, 20);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/auto_orient', { model }, 'orient');
+    ok = true;
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('shape changed');
+    stageMsg(2, res.oriented
+      ? 'auto-oriented for the least support — press again to undo'
+      : 'orientation reset to the original', 'ok');
   } catch (e) { log(e.message, 'bad'); }
   endProgress(ok);
   setBusy(false);

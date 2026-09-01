@@ -342,11 +342,54 @@ def finish_mesh_tris(tris, name, scale, scale_label, rot, warnings):
     }
 
 
+def auto_orient(name):
+    """Tweaker-3: find the orientation with the least support need and store
+    it beside the import; generate_import applies it from then on. Calling
+    again clears it (toggle)."""
+    src = IMPORTS / f"{name}.stl"
+    if not src.is_file():
+        raise ValueError("auto-orient works on imported meshes")
+    marker = IMPORTS / f"{name}.orient.json"
+    if marker.is_file():
+        marker.unlink()
+        result = generate(name, {})
+        result["model"] = name
+        result["oriented"] = False
+        return result
+    import numpy as np
+    from tweaker3.MeshTweaker import Tweak
+    import trimesh
+    m = trimesh.load(str(src), force="mesh")
+    tris = m.triangles
+    if len(tris) > 300_000:      # tweaker is O(n) but python-slow; subsample
+        idx = np.linspace(0, len(tris) - 1, 300_000).astype(int)
+        tris = tris[idx]
+    tw = Tweak(tris.reshape(-1, 3), extended_mode=True, verbose=False,
+               min_volume=True)
+    marker.write_text(json.dumps({
+        "matrix": np.array(tw.matrix).tolist(),
+        "unprintability": float(tw.unprintability),
+    }))
+    result = generate(name, {})
+    result["model"] = name
+    result["oriented"] = True
+    result["unprintability"] = round(float(tw.unprintability), 2)
+    return result
+
+
 def generate_import(name, scale, scale_label, rot=None):
+    import numpy as np
     tris = read_stl(IMPORTS / f"{name}.stl")
-    return finish_mesh_tris(
-        tris, name, scale, scale_label, rot,
-        ["imported mesh - scale and slice only, no parameters"])
+    warnings = ["imported mesh - scale and slice only, no parameters"]
+    orient_marker = IMPORTS / f"{name}.orient.json"
+    if orient_marker.is_file():
+        try:
+            M = np.array(json.loads(orient_marker.read_text())["matrix"])
+            tris = tris @ M.T
+            warnings.append("auto-oriented for least support")
+        except Exception:
+            pass
+    return finish_mesh_tris(tris, name, scale, scale_label, rot, warnings)
 
 
 def save_reference_image(image):
@@ -1695,6 +1738,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/refine":
                 return self._send(200, start_job(
                     refine, req["model"], req.get("notes")))
+            if self.path == "/api/auto_orient":
+                return self._send(200, start_job(auto_orient, req["model"]))
             if self.path == "/api/make_printable":
                 return self._send(200, start_job(
                     make_printable, req["model"],
