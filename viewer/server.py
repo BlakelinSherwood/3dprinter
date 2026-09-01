@@ -712,27 +712,30 @@ def as_shape(obj):
 
 
 def list_models():
-    items = []
-    for f in sorted(IMPORTS.glob("*.stl")) if IMPORTS.is_dir() else []:
-        items.append({"name": f.stem, "summary": "imported mesh",
-                      "params": [], "imported": True})
-    for f in sorted(MODELS.glob("*.py")):
+    entries = []   # (mtime, item) - newest first so the default selection is
+    for f in (IMPORTS.glob("*.stl") if IMPORTS.is_dir() else []):
+        entries.append((f.stat().st_mtime,
+                        {"name": f.stem, "summary": "imported mesh",
+                         "params": [], "imported": True}))
+    for f in MODELS.glob("*.py"):
         if f.stem.startswith("_"):
             continue
         try:
             mod = load_model(f)
             doc = (mod.__doc__ or "").strip().splitlines()
             hist = MODELS / ".history"
-            items.append({
+            entries.append((f.stat().st_mtime, {
                 "name": f.stem,
                 "summary": doc[0] if doc else "",
                 "params": model_params(mod),
                 "has_history": bool(hist.is_dir() and list(hist.glob(f"{f.stem}-*.py"))),
-            })
+            }))
         except Exception:
-            items.append({"name": f.stem, "summary": "LOAD ERROR",
-                          "params": [], "error": traceback.format_exc()})
-    return items
+            entries.append((f.stat().st_mtime,
+                            {"name": f.stem, "summary": "LOAD ERROR",
+                             "params": [], "error": traceback.format_exc()}))
+    entries.sort(key=lambda e: -e[0])   # the thing worked on most recently
+    return [item for _, item in entries]
 
 
 def parse_scale(value):

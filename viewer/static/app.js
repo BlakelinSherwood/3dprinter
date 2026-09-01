@@ -13,13 +13,24 @@ const toMM = (val) => units === 'in' ? val * MM_IN : val;
 const fmtLen = (mm) => units === 'in' ? `${(mm / MM_IN).toFixed(3)}"` : `${mm} mm`;
 const fmtVol = (cm3) => units === 'in'
   ? `${(cm3 / 16.387).toFixed(2)} in³` : `${cm3} cm³`;
+
+// The log is the full history; errors are ALSO mirrored into the active
+// stage's message line so they can't hide in a collapsed log.
 const log = (msg, cls) => {
   const el = document.createElement('div');
   if (cls) el.className = cls;   // ok | bad | dim | warn
   el.textContent = msg;
   $('log').appendChild(el);
   $('log').scrollTop = $('log').scrollHeight;
+  if (cls === 'bad') stageMsg(activeStage(), msg, 'bad');
 };
+
+function stageMsg(n, text, cls) {
+  const el = $('msg' + n);
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'stagemsg' + (cls ? ' ' + cls : '');
+}
 
 // ---------- three.js scene (printer coordinates: Z up, plate on XY) ----------
 const view = $('view');
@@ -96,13 +107,20 @@ function showSTL(url) {
     camera.position.set(d, -d, d * 0.75);
     controls.target.set(0, 0, (bb.max.z - bb.min.z) / 2);
     buildRulers();
+    updateBadge();
   });
 }
 
-// ---------------------------- pipeline controls ----------------------------
+// ---------------------------- pipeline state ----------------------------
 let models = [];
-const state = { generated: false, sliced: false };
+const state = { generated: false, sliced: false, uploaded: false };
 let meshOffset = { x: 0, y: 0, z: 0 };
+let rot = [0, 0, 0];
+let lastResult = null;
+let lastEst = null;
+let sliceMeta = null;     // what the queued G-code actually contains
+let userOpen = null;      // stage manually toggled open by the user
+let describeMode = 'new';
 
 // ---------------------------- measuring rulers ----------------------------
 let rulerOn = false;
@@ -123,7 +141,7 @@ function textSprite(text, sizeMM) {
   const tex = new THREE.CanvasTexture(cv);
   tex.minFilter = THREE.LinearFilter;
   const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  const h = sizeMM;                       // world height of the label
+  const h = sizeMM;
   sp.scale.set(h * cv.width / cv.height, h, 1);
   return sp;
 }
@@ -150,7 +168,7 @@ function buildRulers() {
   const [X, Y, Z] = lastResult.bbox;
   const g = new THREE.Group();
   const lineMat = new THREE.LineBasicMaterial({ color: 0x8aa8c8 });
-  const off = Math.max(6, Math.max(X, Y) * 0.06);   // gap from the model
+  const off = Math.max(6, Math.max(X, Y) * 0.06);
   const tick = Math.max(2, Math.max(X, Y, Z) * 0.02);
   const labelH = Math.max(3.5, Math.max(X, Y, Z) * 0.045);
 
@@ -164,7 +182,6 @@ function buildRulers() {
       lab.position.copy(p.clone().add(tickDir.clone().multiplyScalar(tick + labelH * 0.8)));
       g.add(lab);
     }
-    // end tick at the exact length + total callout
     const end = place(len);
     pts.push(end, end.clone().add(tickDir.clone().multiplyScalar(tick * 1.6)));
     const total = textSprite(fmtLen(+len.toFixed(2)), labelH * 1.25);
@@ -174,7 +191,6 @@ function buildRulers() {
     g.add(new THREE.LineSegments(geo, lineMat));
   }
 
-  // X along the front edge, Y along the left edge, Z up a front-left post
   axisRuler(X, v => new THREE.Vector3(-X / 2 + v, -Y / 2 - off, 0),
             new THREE.Vector3(0, -1, 0));
   axisRuler(Y, v => new THREE.Vector3(-X / 2 - off, -Y / 2 + v, 0),
@@ -189,13 +205,21 @@ function buildRulers() {
 let focus = null;        // {point:[x,y,z] model mm, region: "words"}
 let focusMarker = null;
 
+function updateBadge() {
+  if (focus) $('badge').textContent = `◎ edits aim at: ${focus.region || 'that spot'}`;
+  else if (mesh) $('badge').textContent =
+    'drag to orbit · scroll to zoom · click a spot to aim a change';
+  else $('badge').textContent = 'drag to orbit · scroll to zoom';
+}
+
 function clearFocus() {
   focus = null;
   if (focusMarker) { scene.remove(focusMarker); focusMarker = null; }
   $('focusrow').hidden = true;
+  updateBadge();
 }
 
-function regionWords(p) {   // p is in display coords (centered, z from 0)
+function regionWords(p) {
   if (!lastResult) return '';
   const [X, Y, Z] = lastResult.bbox;
   const parts = [];
@@ -210,7 +234,7 @@ function regionWords(p) {   // p is in display coords (centered, z from 0)
 }
 
 function setFocusFromHit(hit) {
-  clearFocus();
+  if (focusMarker) { scene.remove(focusMarker); focusMarker = null; }
   const p = hit.point;
   const model = [
     +(p.x + meshOffset.x).toFixed(2),
@@ -228,6 +252,8 @@ function setFocusFromHit(hit) {
   $('focustext').textContent =
     `${region || 'spot'} (${model.join(', ')}) — edits target this`;
   $('focusrow').hidden = false;
+  setMode('edit');
+  updateBadge();
 }
 
 function focusAtScreen(cssX, cssY) {
@@ -239,13 +265,11 @@ function focusAtScreen(cssX, cssY) {
     -((cssY - r.top) / r.height) * 2 + 1), camera);
   const hits = rc.intersectObject(mesh);
   if (hits.length) { setFocusFromHit(hits[0]); return 'hit'; }
-  clearFocus(); return 'miss';
+  return 'miss';   // a miss no longer clears an existing focus
 }
-window.studioFocusAt = focusAtScreen;   // synthetic pointer events don't carry
-                                        // real pointer state in embedded panes
+window.studioFocusAt = focusAtScreen;
 
 {
-  const ray = new THREE.Raycaster();
   let downAt = null;
   renderer.domElement.addEventListener('pointerdown', (e) => {
     downAt = [e.clientX, e.clientY];
@@ -254,50 +278,170 @@ window.studioFocusAt = focusAtScreen;   // synthetic pointer events don't carry
     if (!downAt) return;
     const moved = Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]);
     downAt = null;
-    if (moved > 6 || !mesh) return;      // it was an orbit drag, not a click
-    const r = renderer.domElement.getBoundingClientRect();
-    ray.setFromCamera(new THREE.Vector2(
-      ((e.clientX - r.left) / r.width) * 2 - 1,
-      -((e.clientY - r.top) / r.height) * 2 + 1), camera);
-    const hits = ray.intersectObject(mesh);
-    if (hits.length) setFocusFromHit(hits[0]);
-    else clearFocus();
+    if (moved > 6 || !mesh) return;
+    focusAtScreen(e.clientX, e.clientY);
   });
 }
 
-let rot = [0, 0, 0];
-
-function setRot(axis, delta) {
-  if (axis < 0) rot = [0, 0, 0];
-  else rot[axis] = (rot[axis] + delta) % 360;
-  $('rotval').textContent = rot.join('/');
-  if (!busy) doGenerate();
+// ---------------------------- stage controller ----------------------------
+function currentModel() {
+  return models.find(m => m.name === $('model').value);
 }
 
-function setButtons() {
-  $('slice').disabled = !state.generated;
-  $('upload').disabled = !state.sliced;
-  if (typeof syncModelRow === 'function') syncModelRow();
+function activeStage() {
+  if (!$('st1')) return 1;
+  if ($('st1').classList.contains('active') || $('st1').classList.contains('error')) return 1;
+  if ($('st2').classList.contains('active') || $('st2').classList.contains('error')) return 2;
+  return 3;
 }
 
+function fatalWarning() {
+  return lastResult?.warnings?.some(w => /TOO BIG|TOO TALL|will not print/i.test(w));
+}
+
+function setStage(el, status, summary) {
+  el.classList.remove('active', 'done', 'error', 'locked', 'working');
+  if (status) el.classList.add(status);
+  el.classList.toggle('open', userOpen === el.id);
+  const chip = el.querySelector('.chip');
+  const n = el.id.slice(-1);
+  chip.textContent = status === 'done' ? '✓' : status === 'error' ? '!' : n;
+  el.querySelector('.stagesum').textContent = summary || '';
+}
+
+function updateStages() {
+  const hasModel = models.length > 0 && !!$('model').value;
+  const fatal = fatalWarning();
+  const m = currentModel();
+
+  // Stage 1 - Create
+  let s1 = 'active', sum1 = '';
+  if (busy && /describe|import|gen3d|bpy|refine/.test(progOp || '')) s1 = 'working';
+  else if (hasModel) { s1 = 'done'; sum1 = m ? m.name : ''; }
+  setStage($('st1'), s1, sum1);
+
+  // Stage 2 - Shape
+  let s2, sum2 = '';
+  if (!hasModel) { s2 = 'locked'; sum2 = 'build a part first'; }
+  else if (busy && progOp === 'generate') s2 = 'working';
+  else if (fatal) { s2 = 'error'; sum2 = 'too big to print'; }
+  else if (state.generated) {
+    s2 = 'done';
+    if (lastResult) sum2 = lastResult.bbox.map(v => fmtLen(v)).join(' × ');
+  } else s2 = 'active';
+  setStage($('st2'), s2, sum2);
+
+  // Stage 3 - Print
+  let s3, sum3 = '';
+  if (!hasModel || !state.generated || fatal) {
+    s3 = 'locked';
+    sum3 = fatal ? 'fix the size problem first' : 'make a shape first';
+  } else if (busy && /slice|upload/.test(progOp || '')) s3 = 'working';
+  else if (state.uploaded) { s3 = 'done'; sum3 = 'on the printer ✓'; }
+  else if (state.sliced && sliceMeta) {
+    s3 = 'active';
+    sum3 = `sliced · ${sliceMeta.material} · ${sliceMeta.lh}mm · ${sliceMeta.time || ''}`;
+  } else s3 = 'active';
+  setStage($('st3'), s3, sum3);
+
+  // Exactly one expanded stage unless the user has toggled one open.
+  const act = s1 === 'active' || s1 === 'working' ? $('st1')
+            : (s2 === 'active' || s2 === 'working' || s2 === 'error') ? $('st2') : $('st3');
+  for (const el of [$('st1'), $('st2'), $('st3')])
+    if (el !== act && userOpen !== el.id) el.classList.remove('active');
+  if (!act.classList.contains('done')) act.classList.add(
+    act.classList.contains('working') ? 'working' : act.classList.contains('error') ? 'error' : 'active');
+
+  // Buttons
+  $('slice').disabled = !state.generated || busy || fatal;
+  $('slice').hidden = state.sliced && !state.uploaded;
+  $('upload').hidden = !(state.sliced && !state.uploaded);
+  $('upload').disabled = busy;
+  $('reslice').hidden = !state.sliced || state.uploaded;
+  $('revert').disabled = busy || !(m && m.has_history);
+  $('makeprint').hidden = !(m && m.imported);
+  $('makeprint').disabled = busy;
+  $('refine').disabled = busy || (m && m.imported);
+  $('refine').parentElement.style.display = (m && m.imported) ? 'none' : '';
+  $('importnote').hidden = !(m && m.imported);
+  if (m && m.imported)
+    $('importnote').textContent =
+      'imported mesh — attribution kept · use ⚙ make printable if slicing complains';
+  const dl = $('dl');
+  if (state.generated && m) {
+    dl.href = `/output/${m.name}.stl`;
+    dl.setAttribute('download', `${m.name}.stl`);
+    dl.classList.remove('off');
+  } else dl.classList.add('off');
+  for (const id of ['rotx', 'roty', 'rotz', 'rotreset', 'generate'])
+    $(id).disabled = busy;
+  renderPrintsum();
+}
+
+// stage headers toggle open/closed by hand
+for (const el of [$('st1'), $('st2'), $('st3')]) {
+  el.querySelector('.stagehead').onclick = () => {
+    if (el.classList.contains('locked')) return;
+    userOpen = (userOpen === el.id) ? null :
+      (el.classList.contains('active') || el.classList.contains('error')) ? null : el.id;
+    updateStages();
+  };
+}
+
+function invalidateSlice(why) {
+  if (state.sliced || state.uploaded) stageMsg(3, why + ' — slice again', 'dim');
+  state.sliced = false;
+  state.uploaded = false;
+  sliceMeta = null;
+  $('est').classList.add('stale');
+  updateStages();
+}
+
+// ---------------------------- describe mode segment ----------------------------
+function setMode(mode) {
+  describeMode = mode;
+  for (const b of $('mode').querySelectorAll('button'))
+    b.classList.toggle('on', b.dataset.m === mode);
+  $('buildnew').hidden = mode !== 'new';
+  $('editsel').hidden = mode !== 'edit';
+  $('desc').placeholder = mode === 'new'
+    ? 'Type what you want to make, or attach a photo.'
+    : 'Describe the change — click a spot on the part to aim it.';
+  $('deschint').textContent = mode === 'new'
+    ? 'Enter builds · Shift+Enter for a new line'
+    : 'Enter applies the change · Shift+Enter for a new line';
+}
+for (const b of $('mode').querySelectorAll('button'))
+  b.onclick = () => setMode(b.dataset.m);
+
+// ---------------------------- params ----------------------------
+const pretty = (name) =>
+  name.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+
+let genDebounce = null;
 function renderParams(model) {
   const box = $('params');
   box.innerHTML = '';
+  if (!model) return;
   for (const p of model.params) {
     const field = document.createElement('div');
     field.className = 'field';
-    // ratios, angles and counts are not lengths - never unit-convert them
-    const unitless = /(ratio|angle|count|_num|num_)/.test(p.name);
+    const unitless = /(ratio|angle|count|teeth|sides|segments|_num$|^num_)/.test(p.name);
     const label = document.createElement('label');
-    label.textContent = unitless ? p.name : `${p.name} (${units})`;
+    label.textContent = unitless ? pretty(p.name) : `${pretty(p.name)} (${units})`;
+    label.title = p.name;
     label.htmlFor = 'p_' + p.name;
     const input = document.createElement('input');
     input.type = 'number';
     input.step = unitless ? '0.01' : (units === 'in' ? '0.01' : '0.1');
     input.id = 'p_' + p.name;
     input.value = unitless ? p.default : toDisplay(p.default);
-    input.dataset.param = p.name; input.dataset.mm = p.default;
+    input.dataset.param = p.name;
     if (unitless) input.dataset.unitless = '1';
+    input.addEventListener('input', () => {
+      clearTimeout(genDebounce);
+      genDebounce = setTimeout(() => { if (!busy) doGenerate(); }, 600);
+    });
     field.append(label, input);
     box.appendChild(field);
   }
@@ -311,6 +455,7 @@ function currentParams() {
   return out;
 }
 
+// ---------------------------- print settings ----------------------------
 function printSettings() {
   return {
     layer_height: $('ps_lh').value,
@@ -321,6 +466,37 @@ function printSettings() {
     copies: parseInt($('ps_copies').value) || 1,
   };
 }
+
+function materialLabel() {
+  const sel = $('ps_material');
+  const opt = sel.options[sel.selectedIndex];
+  return opt ? opt.textContent.replace(/^custom — /, '') : sel.value.toUpperCase();
+}
+
+function renderPrintsum() {
+  const s = printSettings();
+  const extras = [];
+  if (s.supports) extras.push('supports');
+  if (s.brim) extras.push('brim');
+  if (s.infill_pct !== 15) extras.push(`${s.infill_pct}% infill`);
+  $('printsum').innerHTML =
+    `Loaded: <b>${materialLabel()}</b>` + (extras.length ? ` · ${extras.join(' · ')}` : '');
+}
+$('printsum').onclick = () => { $('printadv').open = !$('printadv').open; };
+
+// quality select writes through to the exact layer height (and back)
+$('ps_quality').onchange = () => {
+  if ($('ps_quality').value !== 'custom') {
+    $('ps_lh').value = $('ps_quality').value;
+    $('ps_lh').dispatchEvent(new Event('change'));
+  }
+};
+function syncQuality() {
+  const lh = $('ps_lh').value;
+  const match = [...$('ps_quality').options].find(o => o.value === lh);
+  $('ps_quality').value = match && !match.hidden ? lh : 'custom';
+}
+
 try {
   const ps = JSON.parse(localStorage.getItem('studio.printset'));
   if (ps) {
@@ -329,19 +505,21 @@ try {
     $('ps_supports').checked = !!ps.supports;
     $('ps_brim').checked = !!ps.brim;
     $('ps_material').value = ps.material ?? 'pla';
+    if (!$('ps_material').value) $('ps_material').value = 'pla';
     $('ps_copies').value = ps.copies ?? 1;
   }
 } catch {}
+syncQuality();
+
 for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies']) {
   $(id).onchange = () => {
     try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
-    // settings changed: the previous slice no longer reflects them
-    state.sliced = false;
-    $('est').innerHTML = '';
-    setButtons();
+    if (id === 'ps_lh') syncQuality();
+    invalidateSlice('settings changed');
   };
 }
 
+// ---------------------------- filament lookup ----------------------------
 function setCustomOption(name, select) {
   let opt = [...$('ps_material').options].find(o => o.value === 'custom');
   if (!opt) {
@@ -369,6 +547,7 @@ $('matlookup_btn').onclick = async () => {
         (a.nozzle_first !== a.nozzle ? ` (first ${a.nozzle_first}°)` : '') +
         ` · bed ${a.bed}°` + (a.bed_first !== a.bed ? ` (first ${a.bed_first}°)` : '') +
         ` · ${res.source}`, 'ok');
+    stageMsg(3, `${res.name} applied — nozzle ${a.nozzle}°, bed ${a.bed}°`, 'ok');
     for (const n of res.notes || []) log('⚠ ' + n, 'warn');
     if (res.alternatives?.length)
       log('also matched: ' + res.alternatives.join(', '), 'dim');
@@ -381,12 +560,13 @@ $('matlookup_btn').onclick = async () => {
   try {
     const meta = await (await fetch('/api/material_custom')).json();
     if (meta.name) setCustomOption(meta.name, false);
-    if ($('ps_material').value !== 'custom') return;
-    // persisted selection was custom; make sure the option label is right
-    if (!meta.name) $('ps_material').value = 'pla';
+    if ($('ps_material').value === 'custom' && !meta.name)
+      $('ps_material').value = 'pla';
+    renderPrintsum();
   } catch {}
 })();
 
+// ---------------------------- header controls ----------------------------
 $('ruler').classList.toggle('on', rulerOn);
 $('ruler').onclick = () => {
   rulerOn = !rulerOn;
@@ -395,118 +575,33 @@ $('ruler').onclick = () => {
   buildRulers();
 };
 
-$('units').textContent = units;
-$('units').onclick = () => {
-  // convert visible inputs in place, then re-label
-  const mmVals = currentParams();
-  units = units === 'in' ? 'mm' : 'in';
-  try { localStorage.setItem('studio.units', units); } catch {}
-  function printSettings() {
-  return {
-    layer_height: $('ps_lh').value,
-    infill_pct: parseInt($('ps_infill').value) || 15,
-    supports: $('ps_supports').checked,
-    brim: $('ps_brim').checked,
-    material: $('ps_material').value,
-    copies: parseInt($('ps_copies').value) || 1,
-  };
+function renderUnits() {
+  for (const b of $('units').querySelectorAll('button'))
+    b.classList.toggle('on', b.dataset.u === units);
 }
-try {
-  const ps = JSON.parse(localStorage.getItem('studio.printset'));
-  if (ps) {
-    $('ps_lh').value = ps.layer_height ?? '0.2';
-    $('ps_infill').value = ps.infill_pct ?? 15;
-    $('ps_supports').checked = !!ps.supports;
-    $('ps_brim').checked = !!ps.brim;
-    $('ps_material').value = ps.material ?? 'pla';
-    $('ps_copies').value = ps.copies ?? 1;
-  }
-} catch {}
-for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies']) {
-  $(id).onchange = () => {
-    try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
-    // settings changed: the previous slice no longer reflects them
-    state.sliced = false;
-    $('est').innerHTML = '';
-    setButtons();
-  };
-}
-
-function setCustomOption(name, select) {
-  let opt = [...$('ps_material').options].find(o => o.value === 'custom');
-  if (!opt) {
-    opt = document.createElement('option');
-    opt.value = 'custom';
-    $('ps_material').appendChild(opt);
-  }
-  opt.textContent = `custom — ${name}`;
-  if (select) {
-    $('ps_material').value = 'custom';
-    $('ps_material').dispatchEvent(new Event('change'));
-  }
-}
-
-$('matlookup_btn').onclick = async () => {
-  const query = $('matlookup').value.trim();
-  if (!query) { log('type a filament name to look up', 'bad'); return; }
-  setBusy(true);
-  log(`looking up filament: ${query}…`, 'dim');
-  try {
-    const res = await api('/api/material_lookup', { query });
-    setCustomOption(res.name, true);
-    const a = res.applied;
-    log(`${res.name} → ${res.class.toUpperCase()} rules · nozzle ${a.nozzle}°` +
-        (a.nozzle_first !== a.nozzle ? ` (first ${a.nozzle_first}°)` : '') +
-        ` · bed ${a.bed}°` + (a.bed_first !== a.bed ? ` (first ${a.bed_first}°)` : '') +
-        ` · ${res.source}`, 'ok');
-    for (const n of res.notes || []) log('⚠ ' + n, 'warn');
-    if (res.alternatives?.length)
-      log('also matched: ' + res.alternatives.join(', '), 'dim');
-  } catch (e) { log(e.message, 'bad'); }
-  setBusy(false);
-};
-
-// restore a stored lookup so "custom" survives restarts
-(async () => {
-  try {
-    const meta = await (await fetch('/api/material_custom')).json();
-    if (meta.name) setCustomOption(meta.name, false);
-    if ($('ps_material').value !== 'custom') return;
-    // persisted selection was custom; make sure the option label is right
-    if (!meta.name) $('ps_material').value = 'pla';
-  } catch {}
-})();
-
-$('units').textContent = units;
-  for (const el of $('params').querySelectorAll('input[data-param]')) {
-    if (el.dataset.unitless) continue;
-    el.value = toDisplay(mmVals[el.dataset.param]);
-    el.step = units === 'in' ? '0.01' : '0.1';
-  }
-  for (const lab of $('params').querySelectorAll('label'))
-    lab.textContent = lab.textContent.replace(/\((in|mm)\)$/, `(${units})`);
-  if (lastResult) showResult(lastResult);
-  if (lastEst) $('est').innerHTML = fmtEst(lastEst);
-  buildRulers();
-};
-
-async function apiJob(path, body) {
-  // long-running codegen: submit, then poll - a single held request gets
-  // killed by proxies after a couple of minutes
-  const start = await api(path, body);
-  if (!start.job) return start;
-  for (;;) {
-    await new Promise(r => setTimeout(r, 3000));
-    const res = await fetch(`/api/job/${start.job}`);
-    const j = await res.json();
-    if (j.status === 'done') return j.result;
-    if (j.status === 'error') {
-      const tail = (j.error || 'failed').trim().split('\n');
-      throw new Error(tail.slice(-3).join(' '));
+renderUnits();
+for (const b of $('units').querySelectorAll('button')) {
+  b.onclick = () => {
+    if (units === b.dataset.u) return;
+    const mmVals = currentParams();
+    units = b.dataset.u;
+    try { localStorage.setItem('studio.units', units); } catch {}
+    renderUnits();
+    for (const el of $('params').querySelectorAll('input[data-param]')) {
+      if (el.dataset.unitless) continue;
+      el.value = toDisplay(mmVals[el.dataset.param]);
+      el.step = units === 'in' ? '0.01' : '0.1';
     }
-  }
+    for (const lab of $('params').querySelectorAll('label'))
+      lab.textContent = lab.textContent.replace(/\((in|mm)\)$/, `(${units})`);
+    if (lastResult) showResult(lastResult, { keepFocus: true });
+    if (lastEst) $('est').innerHTML = fmtEst(lastEst);
+    buildRulers();
+    updateStages();
+  };
 }
 
+// ---------------------------- API + jobs ----------------------------
 async function api(path, body) {
   const r = await fetch(path, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -517,15 +612,59 @@ async function api(path, body) {
   return data;
 }
 
-let lastResult = null;
-function showResult(res) {
+function rememberJob(id, kind) {
+  try { localStorage.setItem('studio.lastjob', JSON.stringify({ id, kind, t: Date.now() })); }
+  catch {}
+}
+function forgetJob() {
+  try { localStorage.removeItem('studio.lastjob'); } catch {}
+}
+
+async function pollJob(id) {
+  for (;;) {
+    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch(`/api/job/${id}`);
+    if (res.status === 404) throw new Error('the running job was lost (server restarted)');
+    const j = await res.json();
+    if (j.status === 'done') return j.result;
+    if (j.status === 'error') {
+      const tail = (j.error || 'failed').trim().split('\n');
+      throw new Error(tail.slice(-3).join(' '));
+    }
+  }
+}
+
+async function apiJob(path, body, kind) {
+  // long-running codegen: submit, then poll - a single held request gets
+  // killed by proxies after a couple of minutes
+  const start = await api(path, body);
+  if (!start.job) return start;
+  rememberJob(start.job, kind || path);
+  try {
+    const out = await pollJob(start.job);
+    forgetJob();
+    return out;
+  } catch (e) { forgetJob(); throw e; }
+}
+
+function showResult(res, opts = {}) {
   lastResult = res;
-  clearFocus();
+  if (!opts.keepFocus) clearFocus();
   let html = `<b>${fmtLen(res.bbox[0])} × ${fmtLen(res.bbox[1])} × ${fmtLen(res.bbox[2])}</b> · ${fmtVol(res.volume_cm3)}`;
   for (const w of res.warnings || []) html += `<div class="warn">⚠ ${w}</div>`;
   $('stats').innerHTML = html;
   showSTL(res.stl);
   for (const w of res.warnings || []) log('⚠ ' + w, 'warn');
+  // auto-decide brim for tall-thin parts; note the decision where it's seen
+  const tall = (res.warnings || []).find(w => /consider enabling Brim/i.test(w));
+  if (tall && !$('ps_brim').checked) {
+    $('ps_brim').checked = true;
+    try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
+    stageMsg(3, 'brim added automatically — tall part with a small footprint', 'dim');
+  }
+  if (res.support?.needs_supports)
+    stageMsg(3, 'this shape may need supports — the slicer will add them if required', 'dim');
+  updateStages();
 }
 
 // ---- progress bar with self-calibrating time estimates ----
@@ -538,7 +677,7 @@ function estimateFor(op, fallback) {
   const a = pastDurations()[op];
   if (!a || !a.length) return fallback;
   const s = [...a].sort((x, y) => x - y);
-  return Math.round(s[Math.floor(s.length / 2)]);   // median of recent runs
+  return Math.round(s[Math.floor(s.length / 2)]);
 }
 function startProgress(op, label, fallback) {
   clearInterval(progTimer);
@@ -549,7 +688,6 @@ function startProgress(op, label, fallback) {
   $('progfill').style.width = '2%';
   const tick = () => {
     const el = Math.round((Date.now() - progStart) / 1000);
-    // crawl toward 96% against the estimate; never claim done early
     $('progfill').style.width =
       Math.min(96, Math.round(100 * el / Math.max(est, 1))) + '%';
     $('progtext').textContent = el <= est
@@ -558,6 +696,7 @@ function startProgress(op, label, fallback) {
   };
   tick();
   progTimer = setInterval(tick, 1000);
+  updateStages();
 }
 function endProgress(ok) {
   clearInterval(progTimer);
@@ -580,9 +719,9 @@ function endProgress(ok) {
 let busy = false;
 function setBusy(b) {
   busy = b;
-  for (const id of ['buildnew', 'editsel', 'generate', 'refine']) $(id).disabled = b;
-  if (b) { $('slice').disabled = true; $('upload').disabled = true; }
-  else setButtons();
+  for (const id of ['buildnew', 'editsel', 'generate', 'refine', 'makeprint'])
+    $(id).disabled = b;
+  updateStages();
 }
 
 async function refreshModels(selectName) {
@@ -591,15 +730,19 @@ async function refreshModels(selectName) {
   sel.innerHTML = '';
   for (const m of models) {
     const o = document.createElement('option');
-    o.value = m.name; o.textContent = m.name + (m.summary ? ' — ' + m.summary : '');
+    o.value = m.name; o.textContent = m.name;
+    o.title = m.summary || '';
     sel.appendChild(o);
   }
   if (selectName) sel.value = selectName;
-  const cur = models.find(x => x.name === sel.value);
+  const cur = currentModel();
+  sel.title = cur?.summary || '';
   if (cur) renderParams(cur);
+  updateStages();
 }
 
-let photo = null;   // {name, data} base64 payload for /api/describe
+// ---------------------------- attach photo ----------------------------
+let photo = null;
 $('photobtn').onclick = () => $('photo').click();
 $('photo').onchange = () => {
   const f = $('photo').files[0];
@@ -610,6 +753,7 @@ $('photo').onchange = () => {
     photo = { name: f.name, data: rd.result.split(',')[1] };
     $('photoname').textContent = f.name;
     $('clearphoto').hidden = false;
+    stageMsg(1, 'photo attached — it will guide this build', 'dim');
   };
   rd.readAsDataURL(f);
 };
@@ -617,8 +761,10 @@ $('clearphoto').onclick = () => {
   photo = null; $('photo').value = '';
   $('photoname').textContent = 'no photo';
   $('clearphoto').hidden = true;
+  stageMsg(1, '');
 };
 
+// ---------------------------- mesh import ----------------------------
 $('importbtn').onclick = () => $('importfile').click();
 $('importfile').onchange = () => {
   const f = $('importfile').files[0];
@@ -628,14 +774,19 @@ $('importfile').onchange = () => {
   rd.onload = async () => {
     setBusy(true);
     log(`importing ${f.name}…`, 'dim');
+    startProgress('import', `importing ${f.name}`, 12);
+    let ok = false;
     try {
       const res = await api('/api/import',
         { name: f.name, data: rd.result.split(',')[1] });
+      ok = true;
       await refreshModels(res.model);
       $('scale').value = 1;
       await doGenerate();
       log(`${res.model} imported`, 'ok');
+      stageMsg(1, `${res.model} imported`, 'ok');
     } catch (e) { log(e.message, 'bad'); }
+    endProgress(ok);
     $('importfile').value = '';
     setBusy(false);
   };
@@ -667,6 +818,7 @@ async function afterFinderImport(res) {
   $('scale').value = 1;
   await refreshModels(res.model);
   await doGenerate();
+  stageMsg(1, `imported "${a.title || res.model}"`, 'ok');
 }
 
 function renderResults(items) {
@@ -757,6 +909,53 @@ $('furlgo').onclick = async () => {
   $('furlgo').disabled = false; $('furlgo').textContent = 'Import';
 };
 
+// ---------------------------- AI generation lane ----------------------------
+(async () => {
+  try {
+    const cfg = await (await fetch('/api/gen3d_config')).json();
+    if (cfg.provider) {
+      $('finderai').hidden = false;
+      $('aiprompt').placeholder = `AI ${cfg.provider}: describe it, or use the photo button…`;
+    }
+  } catch {}
+})();
+
+let aiphotoData = null;
+$('aiphoto').onclick = () => $('aifile').click();
+$('aifile').onchange = () => {
+  const f = $('aifile').files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = () => {
+    aiphotoData = { data: rd.result.split(',')[1], name: f.name };
+    $('aiphoto').textContent = '📷 ' + f.name.slice(0, 12);
+  };
+  rd.readAsDataURL(f);
+};
+$('aigo').onclick = async () => {
+  const prompt = $('aiprompt').value.trim();
+  if (!aiphotoData && !prompt) { log('pick a photo or type a description for AI 3D', 'bad'); return; }
+  setBusy(true);
+  log(`AI 3D generation: ${aiphotoData ? aiphotoData.name : prompt}…`, 'dim');
+  startProgress('gen3d', 'generating 3D model (provider side)', 240);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/gen3d', {
+      image: aiphotoData?.data, image_name: aiphotoData?.name, prompt: prompt || null }, 'gen3d');
+    ok = true;
+    $('finder').hidden = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('new model');
+    log(`${res.model} imported from AI generation — try ⚙ make printable next`, 'ok');
+    aiphotoData = null; $('aiphoto').textContent = '📷→3D';
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+// ---------------------------- core actions ----------------------------
 async function doDescribe(mode) {
   const description = $('desc').value.trim();
   if (!description) { log('describe the part first', 'bad'); return; }
@@ -771,13 +970,11 @@ async function doDescribe(mode) {
   let describeOk = false;
   try {
     const res = await apiJob('/api/describe', { mode, model, description, image: photo,
-      focus: mode === 'edit' ? focus : null });
+      focus: mode === 'edit' ? focus : null }, 'describe');
     describeOk = true;
     rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
     await refreshModels(res.model);
     if (res.suggested_scale) {
-      // The model is built at real-world full size; the scale named in the
-      // description is applied here, not baked into the geometry.
       $('scale').value = res.suggested_scale;
       log(`modeled at full size — scale set to ${res.suggested_scale}`, 'dim');
       await doGenerate();
@@ -785,10 +982,13 @@ async function doDescribe(mode) {
       $('scale').value = 1;
       showResult(res);
     }
-    state.generated = true; state.sliced = false;
+    state.generated = true;
+    invalidateSlice('shape changed');
     $('desc').value = '';
-    $('clearphoto').onclick && photo && $('clearphoto').onclick();
+    if (photo) $('clearphoto').onclick();
     log(`${res.model} ready` + (res.attempts > 1 ? ` (self-repaired after an error)` : ''), 'ok');
+    stageMsg(1, `${res.model} ready`, 'ok');
+    setMode('edit');
   } catch (e) { log(e.message, 'bad'); }
   endProgress(describeOk);
   setBusy(false);
@@ -796,23 +996,29 @@ async function doDescribe(mode) {
 
 async function doGenerate() {
   const name = $('model').value;
-  $('generate').disabled = true;
+  if (!name) return;
+  const prevOp = progOp; progOp = 'generate';
   log(`generate ${name} ` + JSON.stringify(currentParams()), 'dim');
+  updateStages();
   try {
     const res = await api('/api/generate', { model: name, params: currentParams(), scale: $('scale').value || '1', rot });
     showResult(res);
-    state.generated = true; state.sliced = false;
-    log('STL ready', 'ok');
+    state.generated = true;
+    invalidateSlice('shape changed');
+    stageMsg(2, '');
   } catch (e) { log(e.message, 'bad'); }
-  $('generate').disabled = false;
-  setButtons();
+  progOp = prevOp;
+  updateStages();
 }
 
-let lastEst = null;
 function fmtEst(est) {
   if (!est || (!est.time_text && !est.filament_g)) return '';
   const parts = [];
   if (est.time_text) parts.push(`<b>~${est.time_text}</b>`);
+  if (est.time_s) {
+    const done = new Date(Date.now() + est.time_s * 1000);
+    parts.push(`done ~${done.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+  }
   if (est.filament_g != null) {
     parts.push(units === 'in'
       ? `${(est.filament_g / 28.3495).toFixed(2)} oz`
@@ -827,10 +1033,10 @@ function fmtEst(est) {
 }
 
 async function doSlice() {
-  $('slice').disabled = true;
   const settings = printSettings();
   log('slicing…', 'dim');
   startProgress('slice', `slicing ${$('model').value}`, 35);
+  setBusy(true);
   let sliceOk = false;
   try {
     const res = await api('/api/slice', { model: $('model').value, settings });
@@ -838,49 +1044,148 @@ async function doSlice() {
     if (res.overrides?.length) log('overrides: ' + res.overrides.join(', '), 'dim');
     log(res.report, res.ok ? 'ok' : 'bad');
     state.sliced = res.ok;
+    state.uploaded = false;
     lastEst = res.estimates || null;
+    $('est').classList.remove('stale');
     $('est').innerHTML = fmtEst(lastEst);
+    if (res.ok) {
+      if (res.supports_auto) {
+        $('ps_supports').checked = true;
+        try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
+        stageMsg(3, 'tree supports were added automatically — the shape had floating parts', 'warn');
+      } else stageMsg(3, 'checked and safe — ready to send', 'ok');
+      sliceMeta = {
+        material: materialLabel(),
+        lh: settings.layer_height,
+        infill: settings.infill_pct,
+        copies: settings.copies,
+        time: lastEst?.time_text || '',
+      };
+    } else {
+      stageMsg(3, 'the safety check failed — see the activity log', 'bad');
+    }
   } catch (e) { log(e.message, 'bad'); state.sliced = false; }
   endProgress(sliceOk);
-  setButtons();
+  setBusy(false);
 }
 
 async function doUpload() {
-  $('upload').disabled = true;
+  setBusy(true);
   log('uploading (select=false, print=false)…', 'dim');
   try {
     const res = await api('/api/upload', { model: $('model').value });
     log(res.report, res.ok ? 'ok' : 'bad');
-    if (res.ok) loadQueue();
+    if (res.ok) {
+      state.uploaded = true;
+      stageMsg(3, 'on the printer — ask Claude to print it', 'ok');
+      loadQueue();
+    }
   } catch (e) { log(e.message, 'bad'); }
-  $('upload').disabled = false;
+  setBusy(false);
 }
 
-$('generate').onclick = doGenerate;
+function setRot(axis, delta) {
+  if (axis < 0) rot = [0, 0, 0];
+  else rot[axis] = (rot[axis] + delta) % 360;
+  $('rotval').textContent = rot.join('/');
+  if (!busy) doGenerate();
+}
+
+$('generate').onclick = () => { if (!busy) doGenerate(); };
 $('rotx').onclick = () => setRot(0, 90);
 $('roty').onclick = () => setRot(1, 90);
 $('rotz').onclick = () => setRot(2, 90);
 $('rotreset').onclick = () => setRot(-1, 0);
 $('buildnew').onclick = () => doDescribe('new');
+$('editsel').onclick = () => doDescribe('edit');
 $('focusclear').onclick = clearFocus;
 $('desc').addEventListener('keydown', (e) => {
   if (e.key !== 'Enter' || e.shiftKey) return;
   e.preventDefault();
   if (busy) return;
-  doDescribe(e.metaKey || e.ctrlKey ? 'edit' : 'new');
+  if (e.metaKey || e.ctrlKey) doDescribe(describeMode === 'new' ? 'edit' : 'new');
+  else doDescribe(describeMode);
 });
-$('editsel').onclick = () => doDescribe('edit');
 $('slice').onclick = doSlice;
+$('reslice').onclick = () => { state.sliced = false; updateStages(); doSlice(); };
 $('upload').onclick = doUpload;
-$('scale').onchange = () => { if (!busy) doGenerate(); };
+$('scale').onchange = () => {
+  const v = $('scale').value.trim();
+  const okVal = /^\d+(\.\d+)?$/.test(v) || /^\d+(\.\d+)?\s*[/:]\s*\d+(\.\d+)?$/.test(v)
+    || /^\d+(\.\d+)?%$/.test(v) || v === '';
+  $('scale').classList.toggle('badval', !okVal);
+  if (!okVal) { stageMsg(2, `"${v}" is not a scale — use 1, 0.5, 1/64 or 150%`, 'bad'); return; }
+  stageMsg(2, '');
+  if (!busy) doGenerate();
+};
 $('model').onchange = () => {
   $('scale').value = 1;
   rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
-  const m = models.find(x => x.name === $('model').value);
+  const m = currentModel();
+  $('model').title = m?.summary || '';
   renderParams(m);
-  state.generated = state.sliced = false;
-  setButtons();
+  state.generated = false;
+  invalidateSlice('different part');
+  setMode(models.length ? 'edit' : 'new');
   doGenerate();
+};
+
+// ---------------------------- model tools ----------------------------
+$('refine').onclick = async () => {
+  const model = $('model').value;
+  if (!model) return;
+  const m = currentModel();
+  if (m && m.imported) { log('imports are fixed meshes — use Change it to modify them', 'bad'); return; }
+  const notes = $('desc').value.trim() || null;
+  setBusy(true);
+  log(`refining ${model}${notes ? ' — focus: ' + notes : ''}…`, 'dim');
+  startProgress('refine', `refining ${model} (looking at its own renders)`, 160);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/refine', { model, notes }, 'refine');
+    ok = true;
+    $('desc').value = '';
+    await refreshModels(model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('shape changed');
+    log(`${model} refined` + (res.attempts > 1 ? ' (self-repaired)' : ''), 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+$('makeprint').onclick = async () => {
+  const model = $('model').value;
+  setBusy(true);
+  log(`making ${model} printable (Blender voxel remesh)…`, 'dim');
+  startProgress('bpy', `solidifying ${model}`, 60);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/make_printable', { model }, 'bpy');
+    ok = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('new model');
+    log(`${res.model} ready — watertight and printable`, 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
+$('revert').onclick = async () => {
+  const model = $('model').value;
+  if (!model) return;
+  setBusy(true);
+  try {
+    const res = await api('/api/revert', { model });
+    log(res.note, 'ok');
+    stageMsg(2, 'previous version restored — press again to switch back', 'ok');
+    await refreshModels(model);
+    await doGenerate();
+  } catch (e) { log(e.message, 'bad'); }
+  setBusy(false);
 };
 
 // ---------------------------- floating panel ----------------------------
@@ -899,7 +1204,6 @@ function clampPos(x, y) {
   const w = side.offsetWidth || 340, h = Math.min(side.offsetHeight || 400, 200);
   x = Math.min(Math.max(0, x), innerWidth - w);
   y = Math.min(Math.max(0, y), innerHeight - h);
-  // Keep the card inside the window: shrink it as it nears the bottom edge.
   side.style.maxHeight = Math.max(220, innerHeight - y - 12) + 'px';
   return [x, y];
 }
@@ -960,11 +1264,14 @@ async function pollPrinter() {
   try {
     const p = await (await fetch('/api/printer')).json();
     const dot = $('pdot');
-    let text = p.state || 'unknown';
+    let text;
     dot.className = 'dot';
-    if (p.temps && /print/i.test(p.state)) dot.classList.add('busy');
-    else if (p.temps) dot.classList.add('ok');
-    if (p.temps) {
+    if (!p.reachable) text = 'OctoPrint unreachable';
+    else if (!p.temps) text = `printer ${(p.state || 'off').toLowerCase()} — check power/USB`;
+    else {
+      text = p.state;
+      if (/print/i.test(p.state)) dot.classList.add('busy');
+      else dot.classList.add('ok');
       text += ` · nozzle ${tempPair(p.temps.tool0)} · bed ${tempPair(p.temps.bed)}`;
     }
     $('ptext').textContent = text;
@@ -1029,137 +1336,46 @@ async function loadQueue() {
     }
   } catch (e) { $('qcount').textContent = '?'; }
 }
-(async () => {
-  try {
-    const cfg = await (await fetch('/api/gen3d_config')).json();
-    if (!cfg.provider) {
-      $('finderai').classList.add('nokey');
-      $('finderai').title = cfg.hint;
-      $('aiprompt').placeholder = 'AI 3D: add TRIPO_API_KEY or MESHY_API_KEY to ~/.zshrc';
-    } else {
-      $('aiprompt').placeholder = `AI ${cfg.provider}: describe it, or use the photo button…`;
-    }
-  } catch {}
-})();
-
-let aiphotoData = null;
-$('aiphoto').onclick = () => $('aifile').click();
-$('aifile').onchange = () => {
-  const f = $('aifile').files[0];
-  if (!f) return;
-  const rd = new FileReader();
-  rd.onload = () => {
-    aiphotoData = { data: rd.result.split(',')[1], name: f.name };
-    $('aiphoto').textContent = '📷 ' + f.name.slice(0, 12);
-  };
-  rd.readAsDataURL(f);
-};
-$('aigo').onclick = async () => {
-  const prompt = $('aiprompt').value.trim();
-  if (!aiphotoData && !prompt) { log('pick a photo or type a description for AI 3D', 'bad'); return; }
-  setBusy(true);
-  log(`AI 3D generation: ${aiphotoData ? aiphotoData.name : prompt}…`, 'dim');
-  startProgress('gen3d', 'generating 3D model (provider side)', 240);
-  let ok = false;
-  try {
-    const res = await apiJob('/api/gen3d', {
-      image: aiphotoData?.data, image_name: aiphotoData?.name, prompt: prompt || null });
-    ok = true;
-    $('finder').hidden = true;
-    await refreshModels(res.model);
-    showResult(res);
-    state.generated = true; state.sliced = false;
-    log(`${res.model} imported from AI generation — try ⚙ make printable next`, 'ok');
-    aiphotoData = null; $('aiphoto').textContent = '📷→3D';
-  } catch (e) { log(e.message, 'bad'); }
-  endProgress(ok);
-  setBusy(false);
-};
-
 $('queue').addEventListener('toggle', () => { if ($('queue').open) loadQueue(); });
-loadQueue();   // count badge on load
+loadQueue();
 
-// ---------------------------- revert + download ----------------------------
-function syncModelRow() {
-  const m = models.find(x => x.name === $('model').value);
-  $('revert').disabled = !(m && m.has_history);
-  $('makeprint').hidden = !(m && m.imported);
-  const dl = $('dl');
-  if (state.generated && m) {
-    dl.href = `/output/${m.name}.stl`;
-    dl.setAttribute('download', `${m.name}.stl`);
-    dl.classList.remove('off');
-  } else {
-    dl.classList.add('off');
-  }
-}
-$('refine').onclick = async () => {
-  const model = $('model').value;
-  if (!model) return;
-  const m = models.find(x => x.name === model);
-  if (m && m.imported) { log('imports are fixed meshes — use Edit selected to modify them', 'bad'); return; }
-  const notes = $('desc').value.trim() || null;
-  setBusy(true);
-  log(`refining ${model}${notes ? ' — focus: ' + notes : ''}…`, 'dim');
-  startProgress('refine', `refining ${model} (looking at its own renders)`, 160);
-  let ok = false;
-  try {
-    const res = await apiJob('/api/refine', { model, notes });
-    ok = true;
-    $('desc').value = '';
-    await refreshModels(model);
-    showResult(res);
-    state.generated = true; state.sliced = false;
-    log(`${model} refined` + (res.attempts > 1 ? ' (self-repaired)' : ''), 'ok');
-  } catch (e) { log(e.message, 'bad'); }
-  endProgress(ok);
-  setBusy(false);
-};
-
-$('makeprint').onclick = async () => {
-  const model = $('model').value;
-  setBusy(true);
-  log(`making ${model} printable (Blender voxel remesh)…`, 'dim');
-  startProgress('bpy', `solidifying ${model}`, 60);
-  let ok = false;
-  try {
-    const res = await apiJob('/api/make_printable', { model });
-    ok = true;
-    await refreshModels(res.model);
-    showResult(res);
-    state.generated = true; state.sliced = false;
-    log(`${res.model} ready — watertight and printable`, 'ok');
-  } catch (e) { log(e.message, 'bad'); }
-  endProgress(ok);
-  setBusy(false);
-};
-
-$('revert').onclick = async () => {
-  const model = $('model').value;
-  if (!model) return;
-  setBusy(true);
-  try {
-    const res = await api('/api/revert', { model });
-    log(res.note, 'ok');
-    await refreshModels(model);
-    await doGenerate();
-  } catch (e) { log(e.message, 'bad'); }
-  setBusy(false);
-};
-
+// ---------------------------- init ----------------------------
 (async function init() {
-  models = await (await fetch('/api/models')).json();
-  for (const m of models) {
-    const o = document.createElement('option');
-    o.value = m.name; o.textContent = m.name + (m.summary ? ' — ' + m.summary : '');
-    $('model').appendChild(o);
-    if (m.error) log(`${m.name}: ${m.error}`, 'bad');
-  }
+  setMode('new');
+  await refreshModels();
   if (models.length) {
     $('model').value = models[0].name;
+    $('model').title = models[0].summary || '';
     renderParams(models[0]);
+    setMode('edit');
     doGenerate();
   } else {
-    log('no models found in models/', 'bad');
+    stageMsg(1, 'nothing here yet — describe your first part below', 'dim');
   }
+  for (const m of models) if (m.error) log(`${m.name}: ${m.error}`, 'bad');
+
+  // Rescue a job that was running when the page was last closed - job
+  // results are delivered once, so without this a reload orphans them.
+  let last = null;
+  try { last = JSON.parse(localStorage.getItem('studio.lastjob')); } catch {}
+  if (last && Date.now() - last.t < 30 * 60 * 1000) {
+    stageMsg(1, 'a build from before is still running — reattaching…', 'dim');
+    startProgress(last.kind || 'describe', 'reattaching to the running build', 120);
+    try {
+      const res = await pollJob(last.id);
+      forgetJob();
+      endProgress(true);
+      if (res && res.model) {
+        await refreshModels(res.model);
+        showResult(res);
+        state.generated = true;
+        stageMsg(1, `${res.model} ready (finished while you were away)`, 'ok');
+      }
+    } catch (e) {
+      forgetJob();
+      endProgress(false);
+      stageMsg(1, e.message, 'bad');
+    }
+  }
+  updateStages();
 })();

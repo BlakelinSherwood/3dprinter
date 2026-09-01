@@ -12,17 +12,23 @@
   * { box-sizing: border-box; margin: 0; }
   body { display: flex; height: 100vh; background: var(--bg); color: var(--text);
          font: 14px/1.45 system-ui, -apple-system, sans-serif; }
-  #side { width: 320px; min-width: 320px; background: var(--panel);
+  #side { width: 330px; min-width: 330px; background: var(--panel);
           border-right: 1px solid var(--edge); display: flex; flex-direction: column; }
   #side header { padding: 14px 16px; border-bottom: 1px solid var(--edge);
                  display: flex; align-items: center; justify-content: space-between; }
   #ruler.on { color: var(--accent); border-color: var(--accent); }
-  #popout, #units, #ruler { flex: 0 0 auto; width: 34px; height: 30px; padding: 0; font-size: 13px;
+  #popout, #ruler { flex: 0 0 auto; height: 30px; padding: 0 8px; font-size: 13px;
             background: var(--bg); border: 1px solid var(--edge); color: var(--dim); }
-  #popout:hover, #units:hover { color: var(--text); border-color: var(--accent); }
+  #popout { width: 34px; padding: 0; }
+  #popout:hover, #ruler:hover { color: var(--text); border-color: var(--accent); }
+  .seg2 { display: inline-flex; border: 1px solid var(--edge); border-radius: 6px;
+          overflow: hidden; }
+  .seg2 button { flex: 0 0 auto; padding: 5px 10px; font-size: 12px; border: 0;
+          border-radius: 0; background: var(--bg); color: var(--dim); font-weight: 500; }
+  .seg2 button.on { background: var(--edge); color: var(--text); }
   /* Floating mode: the panel becomes a draggable card over the viewport. */
   #side.float {
-    position: fixed; z-index: 10; width: 340px; min-width: 0;
+    position: fixed; z-index: 10; width: 348px; min-width: 0;
     max-height: calc(100vh - 24px); border: 1px solid var(--edge);
     border-radius: 12px; box-shadow: 0 14px 44px rgba(0,0,0,.55);
     background: rgba(28, 31, 38, .92); backdrop-filter: blur(10px);
@@ -32,7 +38,40 @@
   #side.float #log { height: 110px; }
   #side header h1 { font-size: 16px; }
   #side header .sub { color: var(--dim); font-size: 12px; margin-top: 2px; }
-  #controls { padding: 14px 16px; overflow-y: auto; flex: 1; }
+  #controls { padding: 4px 12px 14px; overflow-y: auto; flex: 1; }
+
+  /* ------------------------- pipeline stages ------------------------- */
+  .stage { border: 1px solid var(--edge); border-radius: 10px; margin-top: 12px;
+           background: rgba(255,255,255,.015); min-width: 0; }
+  .stagehead { display: flex; align-items: center; gap: 9px; padding: 10px 12px;
+               cursor: pointer; user-select: none; }
+  .stagehead h2 { font-size: 13.5px; font-weight: 600; }
+  .chip { flex: 0 0 22px; height: 22px; border-radius: 50%; display: flex;
+          align-items: center; justify-content: center; font-size: 12px;
+          font-weight: 700; background: var(--edge); color: var(--dim); }
+  .stage.active > .stagehead .chip { background: var(--accent); color: #eaf1f8; }
+  .stage.done   > .stagehead .chip { background: var(--ok); color: #0c2018; }
+  .stage.error  > .stagehead .chip { background: var(--bad); color: #fff; }
+  .stage.working > .stagehead .chip { animation: pulse 1.2s ease-in-out infinite;
+          background: var(--accent); color: #eaf1f8; }
+  @keyframes pulse { 50% { opacity: .45; } }
+  .stagesum { flex: 1; text-align: right; color: var(--dim); font-size: 11.5px;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stage.locked { opacity: .55; }
+  .stagebody { padding: 0 12px 12px; }
+  .stage:not(.open):not(.active):not(.error) .stagebody { display: none; }
+  .stagemsg { font-size: 12px; margin-top: 8px; min-height: 0; }
+  .stagemsg.ok { color: var(--ok); } .stagemsg.bad { color: var(--bad); }
+  .stagemsg.warn { color: #ffb224; } .stagemsg.dim { color: var(--dim); }
+  .stage:not(.active) button.primary { background: var(--edge); color: var(--text); }
+  .adv { margin-top: 10px; }
+  .adv summary { color: var(--dim); font-size: 12px; cursor: pointer;
+                 user-select: none; }
+  .adv[open] summary { margin-bottom: 4px; }
+  .tiny { flex: 0 0 auto; padding: 4px 8px; font-size: 11px; font-weight: 500;
+          background: none; border: 0; color: var(--dim); text-decoration: underline; }
+  .tiny:hover { color: var(--text); }
+
   #params { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
   .field { display: flex; flex-direction: column; }
   label { display: block; color: var(--dim); font-size: 12px; margin: 10px 0 4px; }
@@ -71,6 +110,7 @@
     border: 1px solid var(--edge); border-radius: 6px; font: inherit;
   }
   input[type=number]:focus, select:focus { outline: 1px solid var(--accent); }
+  input.badval { border-color: var(--bad); }
   .row { display: flex; gap: 8px; margin-top: 14px; }
   button {
     flex: 1; padding: 9px 0; border: 0; border-radius: 6px; font: inherit;
@@ -78,7 +118,7 @@
   }
   button.primary { background: var(--accent); color: #eaf1f8; }
   button:disabled { opacity: .38; cursor: default; }
-  #stats { margin-top: 12px; color: var(--dim); font-size: 12px; min-height: 32px; }
+  #stats { margin-top: 12px; color: var(--dim); font-size: 12px; }
   #stats b { color: var(--text); font-weight: 600; }
   #printer { margin-top: 5px; display: flex; align-items: center; gap: 6px; }
   .dot { width: 8px; height: 8px; border-radius: 50%; background: #555;
@@ -91,9 +131,12 @@
   .btnlink { display: block; text-align: center; background: var(--edge);
     color: var(--text); border-radius: 6px; text-decoration: none; }
   .btnlink.off { opacity: .38; pointer-events: none; }
-  #queue { border-top: 1px solid var(--edge); padding: 8px 16px; flex: none; }
-  #queue summary { color: var(--dim); font-size: 12px; cursor: pointer;
-    user-select: none; }
+  #printsum { display: flex; align-items: center; gap: 8px; margin-top: 10px;
+    color: var(--dim); font-size: 12px; cursor: pointer; }
+  #printsum b { color: var(--text); font-weight: 600; }
+  #queue, #logbox { border-top: 1px solid var(--edge); padding: 8px 16px; flex: none; }
+  #queue summary, #logbox summary { color: var(--dim); font-size: 12px;
+    cursor: pointer; user-select: none; }
   #queue[open] #qlist { max-height: 130px; overflow-y: auto; margin-top: 6px;
     padding-right: 14px; scrollbar-gutter: stable; }
   .qrow { display: flex; align-items: center; gap: 8px; padding: 3px 0;
@@ -123,7 +166,6 @@
   #finderai input[type=text] { padding: 7px 9px; background: var(--bg);
     color: var(--text); border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
   #finderai button { flex: 0 0 auto; padding: 6px 10px; }
-  #finderai.nokey { opacity: .45; }
   #finderquery input, #finderurl input {
     flex: 1; padding: 7px 9px; background: var(--bg); color: var(--text);
     border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
@@ -145,8 +187,9 @@
   .frow button { flex: 0 0 auto; padding: 3px 10px; font-size: 12px; }
   #est { color: var(--dim); font-size: 12px; margin-top: 4px; }
   #est b { color: var(--text); font-weight: 600; }
-  #log { height: 150px; flex: none; overflow-y: auto; background: var(--bg);
-         border-top: 1px solid var(--edge); padding: 10px 12px;
+  #est.stale { opacity: .5; }
+  #log { height: 150px; overflow-y: auto; background: var(--bg);
+         padding: 10px 12px; margin-top: 6px; border-radius: 6px;
          font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
          white-space: pre-wrap; word-break: break-word; }
   #log .ok { color: var(--ok); } #log .bad { color: var(--bad); }
@@ -165,116 +208,176 @@
     <header id="grab">
       <div>
         <h1>Part Studio</h1>
-        <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250 &middot; PLA</div>
+        <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250</div>
         <div class="sub" id="printer"><span class="dot" id="pdot"></span><span id="ptext">checking printer…</span></div>
       </div>
-      <div style="display:flex; gap:6px">
-        <button id="ruler" title="Show measuring rulers at print size on each axis">&#128207;</button>
-        <button id="units" title="Toggle inches / millimetres">in</button>
+      <div style="display:flex; gap:6px; align-items:center">
+        <button id="ruler" title="Show measuring rulers at print size">&#128207; size</button>
+        <div id="units" class="seg2" title="Display units">
+          <button data-u="in">in</button><button data-u="mm">mm</button>
+        </div>
         <button id="popout" title="Pop the panel out so it can be dragged around">⇱</button>
       </div>
     </header>
     <div id="controls">
-      <label for="desc">Describe it</label>
-      <textarea id="desc" rows="3" placeholder="A new part (&quot;a headphone hook for a 18mm desk edge&quot;) or a change (&quot;make the hole 6mm&quot;)"></textarea>
-      <div class="row" id="photorow">
-        <button id="photobtn" title="Attach a reference photo">&#128247; photo</button>
-        <input type="file" id="photo" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
-        <span id="photoname">no photo</span>
-        <button id="clearphoto" hidden title="Remove photo">&times;</button>
-        <button id="importbtn" title="Import a mesh: STL, GLB, OBJ, PLY, 3MF (Tripo/Meshy downloads, scans)">&#8853; mesh</button>
-        <button id="findbtn" title="Search public model libraries (Printables)">&#128270; find</button>
-        <input type="file" id="importfile" accept=".stl,.glb,.gltf,.obj,.ply,.3mf" hidden>
-      </div>
-      <div class="row">
-        <button id="buildnew" class="primary">Build new</button>
-        <button id="editsel">Edit selected</button>
-      </div>
-      <div class="row" id="focusrow" hidden>
-        <span id="focusdot">&#9678;</span>
-        <span id="focustext"></span>
-        <button id="focusclear" title="Clear the selected spot">&times;</button>
-      </div>
-      <div class="hint">Enter builds new &middot; &#8984;Enter edits selected &middot; Shift+Enter for a new line</div>
-      <div id="prog" hidden>
-        <div id="progtrack"><div id="progfill"></div></div>
-        <div id="progtext"></div>
-      </div>
-      <label for="model">Model</label>
-      <select id="model"></select>
-      <div class="row" id="modelrow">
-        <button id="revert" title="Swap in the previous saved version of this model (press again to switch back)" disabled>&#8617; undo</button>
-        <button id="refine" title="Render the model, show it to the generator, and have it rewrite itself with richer detail">&#10024; refine</button>
-        <button id="makeprint" hidden title="Blender voxel-remesh: turn this import into one watertight printable solid">&#9881; make printable</button>
-        <a id="dl" class="btnlink" download title="Download the generated STL">&#8595; STL</a>
-      </div>
-      <div id="params"></div>
-      <div class="row" style="align-items:flex-end">
-        <div class="field" style="flex:0 0 90px">
-          <label for="scale" title="Scale from full size: models are built at real-world dimensions; 1/64 here prints a 1/64 miniature">scale &times; <span style="opacity:.6">(of full)</span></label>
-          <input type="text" id="scale" value="1" list="scales" spellcheck="false">
-          <datalist id="scales">
-            <option value="1/12"><option value="1/18"><option value="1/24">
-            <option value="1/32"><option value="1/43"><option value="1/55">
-            <option value="1/64"><option value="1/87"><option value="2">
-          </datalist>
+
+      <!-- ============================ 1 · CREATE ============================ -->
+      <section class="stage" id="st1">
+        <div class="stagehead" data-st="1">
+          <span class="chip">1</span><h2>Create</h2><span class="stagesum"></span>
         </div>
-        <button id="generate" class="primary">Generate</button>
-      </div>
-      <div class="row" id="rotrow">
-        <button id="rotx" title="Rotate 90&deg; about X">X+90</button>
-        <button id="roty" title="Rotate 90&deg; about Y">Y+90</button>
-        <button id="rotz" title="Rotate 90&deg; about Z">Z+90</button>
-        <button id="rotreset" title="Reset rotation">&#8634;</button>
-        <span id="rotval">0/0/0</span>
-      </div>
-      <label>print settings</label>
-      <div id="printset">
-        <div class="field">
-          <label for="ps_lh">layer height (mm)</label>
-          <select id="ps_lh">
-            <option>0.12</option><option>0.16</option>
-            <option selected>0.2</option><option>0.28</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="ps_infill">infill %</label>
-          <input type="number" id="ps_infill" value="15" min="0" max="100" step="5">
-        </div>
-        <label class="check"><input type="checkbox" id="ps_supports"> tree supports</label>
-        <label class="check"><input type="checkbox" id="ps_brim"> brim</label>
-        <div class="field" style="grid-column: 1 / -1">
-          <label for="matlookup">filament lookup</label>
-          <div class="row" style="margin-top:0; gap:6px">
-            <input type="text" id="matlookup" placeholder="e.g. Overture Matte PLA, Polymaker PETG" spellcheck="false" style="flex:1">
-            <button id="matlookup_btn" title="Look up this filament and apply its temperatures" style="flex:0 0 44px">&#128269;</button>
+        <div class="stagebody">
+          <label for="model">Part</label>
+          <select id="model" title=""></select>
+          <div class="row" style="margin-top:10px; align-items:center">
+            <div id="mode" class="seg2">
+              <button data-m="new" class="on">New part</button>
+              <button data-m="edit">Change it</button>
+            </div>
           </div>
+          <textarea id="desc" rows="3" placeholder="Type what you want to make, or attach a photo."></textarea>
+          <div class="row" id="photorow">
+            <button id="photobtn" title="Attach a reference photo">&#128247; photo</button>
+            <input type="file" id="photo" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+            <span id="photoname">no photo</span>
+            <button id="clearphoto" hidden title="Remove photo">&times;</button>
+            <button id="importbtn" title="Import a mesh file: STL, GLB, OBJ, PLY, 3MF">&#8853; mesh</button>
+            <button id="findbtn" title="Search public model libraries">&#128270; find</button>
+            <input type="file" id="importfile" accept=".stl,.glb,.gltf,.obj,.ply,.3mf" hidden>
+          </div>
+          <div class="row" id="focusrow" hidden>
+            <span id="focusdot">&#9678;</span>
+            <span id="focustext"></span>
+            <button id="focusclear" title="Clear the selected spot">&times;</button>
+          </div>
+          <div class="row">
+            <button id="buildnew" class="primary">Build it</button>
+            <button id="editsel" class="primary" hidden>Make the change</button>
+          </div>
+          <div class="hint" id="deschint">Enter builds &middot; Shift+Enter for a new line</div>
+          <div id="prog" hidden>
+            <div id="progtrack"><div id="progfill"></div></div>
+            <div id="progtext"></div>
+          </div>
+          <div class="stagemsg" id="msg1"></div>
         </div>
-        <div class="field">
-          <label for="ps_material">material</label>
-          <select id="ps_material">
-            <option value="pla" selected>PLA</option>
-            <option value="petg">PETG</option>
-            <option value="tpu">TPU 95A</option>
-          </select>
+      </section>
+
+      <!-- ============================ 2 · SHAPE ============================ -->
+      <section class="stage" id="st2">
+        <div class="stagehead" data-st="2">
+          <span class="chip">2</span><h2>Shape</h2><span class="stagesum"></span>
         </div>
-        <div class="field">
-          <label for="ps_copies">copies</label>
-          <input type="number" id="ps_copies" value="1" min="1" max="25" step="1">
+        <div class="stagebody">
+          <div class="row" id="modelrow" style="margin-top:10px">
+            <button id="revert" title="Swap back to the previous saved version (press again to switch forward)" disabled>&#8617; undo change</button>
+            <button id="makeprint" hidden title="Blender voxel-remesh: turn this import into one watertight printable solid">&#9881; make printable</button>
+          </div>
+          <div class="hint" id="importnote" hidden></div>
+          <div id="params"></div>
+          <div id="stats"></div>
+          <details class="adv"><summary>More shaping</summary>
+            <div class="row" style="align-items:flex-end; margin-top:6px">
+              <div class="field" style="flex:0 0 90px">
+                <label for="scale" title="Print at a fraction of full size, e.g. 1/64">scale &times;</label>
+                <input type="text" id="scale" value="1" list="scales" spellcheck="false">
+                <datalist id="scales">
+                  <option value="1/12"><option value="1/18"><option value="1/24">
+                  <option value="1/32"><option value="1/43"><option value="1/55">
+                  <option value="1/64"><option value="1/87"><option value="2">
+                </datalist>
+              </div>
+              <button id="generate">Re-generate</button>
+            </div>
+            <div class="row" id="rotrow">
+              <button id="rotx" title="Rotate 90&deg; about X">X+90</button>
+              <button id="roty" title="Rotate 90&deg; about Y">Y+90</button>
+              <button id="rotz" title="Rotate 90&deg; about Z">Z+90</button>
+              <button id="rotreset" title="Reset rotation">&#8634;</button>
+              <span id="rotval">0/0/0</span>
+            </div>
+            <div class="row">
+              <button id="refine" title="AI looks at renders of the part and rewrites it with richer detail">&#10024; refine detail</button>
+              <a id="dl" class="btnlink off" download title="Download the STL file">&#8595; STL</a>
+            </div>
+          </details>
+          <div class="stagemsg" id="msg2"></div>
         </div>
-      </div>
-      <div class="row">
-        <button id="slice" disabled>Slice + check</button>
-        <button id="upload" disabled>Upload</button>
-      </div>
-      <div id="stats"></div>
-      <div id="est"></div>
+      </section>
+
+      <!-- ============================ 3 · PRINT ============================ -->
+      <section class="stage" id="st3">
+        <div class="stagehead" data-st="3">
+          <span class="chip">3</span><h2>Print</h2><span class="stagesum"></span>
+        </div>
+        <div class="stagebody">
+          <div id="printsum" title="Click for print options"></div>
+          <div class="row" style="margin-top:8px">
+            <div class="field" style="flex:1">
+              <label for="ps_quality">quality</label>
+              <select id="ps_quality">
+                <option value="0.28">Draft</option>
+                <option value="0.2" selected>Standard</option>
+                <option value="0.12">Fine</option>
+                <option value="custom" hidden>Custom</option>
+              </select>
+            </div>
+            <div class="field" style="flex:0 0 84px">
+              <label for="ps_copies">copies</label>
+              <input type="number" id="ps_copies" value="1" min="1" max="25" step="1">
+            </div>
+          </div>
+          <div class="row">
+            <button id="slice" class="primary" disabled>Slice + check</button>
+            <button id="upload" class="primary" hidden>Send to printer</button>
+            <button id="reslice" class="tiny" hidden>re-slice</button>
+          </div>
+          <div id="est"></div>
+          <details class="adv" id="printadv"><summary>Print options</summary>
+            <div id="printset">
+              <div class="field">
+                <label for="ps_lh">layer height (mm)</label>
+                <select id="ps_lh">
+                  <option>0.12</option><option>0.16</option>
+                  <option selected>0.2</option><option>0.28</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="ps_infill">infill %</label>
+                <input type="number" id="ps_infill" value="15" min="0" max="100" step="5">
+              </div>
+              <label class="check"><input type="checkbox" id="ps_supports"> tree supports</label>
+              <label class="check"><input type="checkbox" id="ps_brim"> brim</label>
+              <div class="field">
+                <label for="ps_material">material</label>
+                <select id="ps_material">
+                  <option value="pla" selected>PLA</option>
+                  <option value="petg">PETG</option>
+                  <option value="tpu">TPU 95A</option>
+                </select>
+              </div>
+              <div class="field" style="grid-column: 1 / -1">
+                <label for="matlookup">filament lookup</label>
+                <div class="row" style="margin-top:0; gap:6px">
+                  <input type="text" id="matlookup" placeholder="e.g. Overture Matte PLA" spellcheck="false" style="flex:1">
+                  <button id="matlookup_btn" title="Look up this filament and apply its temperatures" style="flex:0 0 64px">look up</button>
+                </div>
+              </div>
+            </div>
+          </details>
+          <div class="stagemsg" id="msg3"></div>
+        </div>
+      </section>
+
     </div>
     <details id="queue">
       <summary>OctoPrint queue (<span id="qcount">&hellip;</span>)</summary>
       <div id="qlist"></div>
     </details>
-    <div id="log"></div>
+    <details id="logbox">
+      <summary>Activity log</summary>
+      <div id="log"></div>
+    </details>
     <footer>Uploads never select or start a print. Printing happens only via
     Claude, with explicit approval, after a first-layer check.</footer>
   </div>
@@ -289,7 +392,7 @@
       <button id="fgo" class="primary" style="flex:0 0 70px">Search</button>
     </div>
     <div id="fresults"></div>
-    <div class="row" id="finderai">
+    <div class="row" id="finderai" hidden>
       <button id="aiphoto" title="Generate a 3D model from a photo">&#128247;&#8594;3D</button>
       <input type="file" id="aifile" accept="image/png,image/jpeg,image/webp" hidden>
       <input type="text" id="aiprompt" placeholder="or describe it (AI text&#8594;3D)&hellip;" spellcheck="false" style="flex:1">
