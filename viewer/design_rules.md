@@ -28,3 +28,15 @@ Detailing:
 - Fillet vertical edges >= 0.5 where the shape allows; avoid tiny fillets on
   top edges (they slice into fragile sliver perimeters).
 - Avoid large flat tops directly over sparse infill deeper than 6mm.
+
+QR codes (business plaques, listing signs):
+- `import segno` is available. `segno.make(text, error='m').matrix` yields the
+  module grid (rows of booleans/ints, quiet zone NOT included).
+- Build a plaque: base plate, then one fused block per dark module, raised
+  0.6-1.0mm (or recessed) — module pitch >= 2mm so a phone camera reads a
+  printed code reliably; leave a 4-module quiet border of bare plate.
+- Two-color trick without a multi-material printer: pause-at-height is not
+  wired here, so prefer RAISED dark modules and tell the user to paint or
+  marker the top surface, or print at 100% contrast via shadow (deep recess).
+- Text on plaques: cq.Workplane().text(...) with fontsize >= 8mm and depth
+  0.6-1.2mm; embossed survives FDM better than engraved below 6mm text.
