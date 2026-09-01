@@ -1305,12 +1305,9 @@ def printables_gql(query, variables):
     return out["data"]
 
 
-def search_models(query):
-    query = (query or "").strip()
-    if not query:
-        raise ValueError("type something to search for")
+def search_printables(query):
     data = printables_gql(
-        """query S($q: String!) { searchPrints2(query: $q, limit: 24) { items {
+        """query S($q: String!) { searchPrints2(query: $q, limit: 16) { items {
              id name slug image { filePath } user { publicUsername }
              license { name } likesCount downloadCount } } }""",
         {"q": query})
@@ -1329,6 +1326,94 @@ def search_models(query):
             "source": "Printables",
         })
     return items
+
+
+def search_sketchfab(query):
+    """Keyless search of downloadable CC models - the deep well of exact-
+    identity vehicle meshes (a '1967 Mustang Fastback' at 500k faces)."""
+    url = ("https://api.sketchfab.com/v3/search?type=models&downloadable=true"
+           "&count=12&q=" + urllib.parse.quote(query))
+    req = urllib.request.Request(url, headers={"User-Agent": PRINTABLES_UA})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        data = json.load(r)
+    items = []
+    for it in data.get("results", []):
+        thumbs = (it.get("thumbnails") or {}).get("images") or []
+        thumb = min(thumbs, key=lambda t: abs((t.get("width") or 999) - 200),
+                    default=None)
+        items.append({
+            "id": "sf:" + it["uid"],
+            "name": it["name"],
+            "url": it.get("viewerUrl") or f"https://sketchfab.com/3d-models/{it['uid']}",
+            "image": thumb["url"] if thumb else None,
+            "author": (it.get("user") or {}).get("displayName"),
+            "license": (it.get("license") or {}).get("label"),
+            "downloads": None,
+            "faces": it.get("faceCount"),
+            "source": "Sketchfab",
+        })
+    return items
+
+
+def search_models(query):
+    query = (query or "").strip()
+    if not query:
+        raise ValueError("type something to search for")
+    items, errors = [], []
+    for fn in (search_printables, search_sketchfab):
+        try:
+            items.extend(fn(query))
+        except Exception as e:
+            errors.append(f"{fn.__name__}: {e}")
+    if not items and errors:
+        raise RuntimeError("; ".join(errors)[:300])
+    return items
+
+
+def sketchfab_files(uid):
+    token = os.environ.get("SKETCHFAB_API_TOKEN")
+    if not token:
+        return {"id": "sf:" + uid, "name": "Sketchfab model",
+                "needs_token": True, "files": []}
+    req = urllib.request.Request(
+        f"https://api.sketchfab.com/v3/models/{uid}/download",
+        headers={"Authorization": f"Token {token}",
+                 "User-Agent": PRINTABLES_UA})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = json.load(r)
+    files = []
+    for kind in ("glb", "gltf"):
+        if d.get(kind, {}).get("url"):
+            files.append({"id": f"{uid}|{kind}", "name": f"model.{kind}",
+                          "fileSize": d[kind].get("size")})
+    return {"id": "sf:" + uid, "name": "Sketchfab model", "files": files}
+
+
+def sketchfab_import(uid, kind):
+    token = os.environ.get("SKETCHFAB_API_TOKEN")
+    if not token:
+        raise RuntimeError("add SKETCHFAB_API_TOKEN (free account) to "
+                           "~/.zshrc for one-click Sketchfab import")
+    req = urllib.request.Request(
+        f"https://api.sketchfab.com/v3/models/{uid}/download",
+        headers={"Authorization": f"Token {token}",
+                 "User-Agent": PRINTABLES_UA})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        d = json.load(r)
+    url = d.get(kind, {}).get("url") or d.get("glb", {}).get("url")
+    if not url:
+        raise RuntimeError("Sketchfab offered no downloadable file")
+    raw = http_download(url)
+    ext = ".glb" if kind == "glb" else ".zip"
+    if ext == ".zip":
+        raise RuntimeError("this model only offers a gltf archive - "
+                           "download it in the browser and use the mesh button")
+    stem = save_import(f"sketchfab_{uid}.glb", base64.b64encode(raw).decode())
+    (IMPORTS / f"{stem}.json").write_text(json.dumps(
+        {"title": stem, "source": "Sketchfab",
+         "url": f"https://sketchfab.com/3d-models/{uid}",
+         "license": "see model page"}, indent=2))
+    return {"model": stem, "attribution": {"title": stem}}
 
 
 def model_files(print_id):
@@ -1380,6 +1465,9 @@ def import_remote(print_id, file_id):
 
 def import_url(url):
     url = (url or "").strip()
+    m = re.search(r"sketchfab\.com/3d-models/(?:[\w-]*-)?([0-9a-f]{32})", url)
+    if m:
+        return sketchfab_import(m.group(1), "glb")
     m = re.match(r"https?://(?:www\.)?printables\.com/model/(\d+)", url)
     if m:
         info = model_files(m.group(1))
@@ -1726,9 +1814,17 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/search":
                 return self._send(200, search_models(req.get("query")))
             if self.path == "/api/model_files":
-                return self._send(200, model_files(req["id"]))
+                mid = str(req["id"])
+                if mid.startswith("sf:"):
+                    return self._send(200, sketchfab_files(mid[3:]))
+                return self._send(200, model_files(mid))
             if self.path == "/api/model_import":
-                return self._send(200, import_remote(req["id"], req["file_id"]))
+                mid = str(req["id"])
+                if mid.startswith("sf:"):
+                    uid, _, kind = str(req["file_id"]).partition("|")
+                    return self._send(200, start_job(
+                        sketchfab_import, uid, kind or "glb"))
+                return self._send(200, import_remote(mid, req["file_id"]))
             if self.path == "/api/import_url":
                 return self._send(200, import_url(req.get("url")))
             if self.path == "/api/material_lookup":

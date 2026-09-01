@@ -808,7 +808,7 @@ $('finderclose').onclick = () => { $('finder').hidden = true; };
 async function finderImport(printId, fileId, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'importing…'; }
   try {
-    const res = await api('/api/model_import', { id: printId, file_id: fileId });
+    const res = await apiJob('/api/model_import', { id: printId, file_id: fileId });
     await afterFinderImport(res);
   } catch (e) {
     log(e.message, 'bad');
@@ -848,8 +848,10 @@ function renderResults(items) {
     nm.className = 'fname'; nm.textContent = it.name; nm.title = it.name;
     const sub = document.createElement('div');
     sub.className = 'fsub';
-    sub.textContent = `${it.author || '?'} · ${it.license || 'license unknown'}` +
-      (it.downloads ? ` · ${it.downloads.toLocaleString()} downloads` : '');
+    sub.textContent = `${it.source || 'Printables'} · ${it.author || '?'} · ` +
+      `${it.license || 'license unknown'}` +
+      (it.downloads ? ` · ${it.downloads.toLocaleString()} downloads` : '') +
+      (it.faces ? ` · ${(it.faces / 1000).toFixed(0)}k faces` : '');
     meta.append(nm, sub);
     card.append(img, meta);
     let open = false, filesBox = null;
@@ -863,8 +865,13 @@ function renderResults(items) {
       try {
         const info = await api('/api/model_files', { id: it.id });
         filesBox.innerHTML = '';
-        if (!info.files.length) {
-          filesBox.innerHTML = '<div class="frow"><span class="qname">no STL files in this model</span></div>';
+        if (info.needs_token) {
+          filesBox.innerHTML =
+            `<div class="frow"><span class="qname">add a free SKETCHFAB_API_TOKEN` +
+            ` to ~/.zshrc for one-click import — or download the .glb on the` +
+            ` page and use the ⊕ mesh button</span></div>`;
+        } else if (!info.files.length) {
+          filesBox.innerHTML = '<div class="frow"><span class="qname">no importable files in this model</span></div>';
         }
         for (const f of info.files) {
           const row = document.createElement('div');
@@ -877,6 +884,14 @@ function renderResults(items) {
           go.textContent = 'import';
           go.onclick = (ev) => { ev.stopPropagation(); finderImport(it.id, f.id, go); };
           row.append(n, sz, go);
+          filesBox.appendChild(row);
+        }
+        if (it.url) {
+          const row = document.createElement('div');
+          row.className = 'frow';
+          row.innerHTML = `<a class="qname" href="${it.url}" target="_blank"` +
+            ` rel="noopener" style="color:var(--dim)">view on ${it.source || 'the site'} ↗</a>`;
+          row.onclick = (ev) => ev.stopPropagation();
           filesBox.appendChild(row);
         }
       } catch (e) {
