@@ -19,9 +19,18 @@ import sys
 
 # Heat commands: M104/M109 set the hotend, M140/M190 the bed. S0 is "turn off",
 # emitted by the end G-code, so it is not a temperature to range-check.
-HOTEND_RE = re.compile(r"^M10[49]\b[^;\n]*?\sS(\d+(?:\.\d+)?)", re.M)
-BED_RE = re.compile(r"^M1[49]0\b[^;\n]*?\sS(\d+(?:\.\d+)?)", re.M)
-AXIS_RE = {ax: re.compile(rf"\b{ax}(-?\d+(?:\.\d+)?)") for ax in "XYZ"}
+HOTEND_RE = re.compile(r"^\s*M10[49](?!\d)[^;\n]*?[SR](\d+(?:\.\d+)?)",
+                       re.M | re.I)
+BED_RE = re.compile(r"^\s*M1[49]0(?!\d)[^;\n]*?[SR](\d+(?:\.\d+)?)",
+                    re.M | re.I)
+# Value form covers Orca's leading-dot decimals ("G1 Z.4") and compact
+# Marlin words with no separating space ("G1X10Y300").
+NUM = r"([+-]?(?:\d+\.?\d*|\.\d+))"
+AXIS_RE = {ax: re.compile(ax + NUM) for ax in "XYZ"}
+ARC_I_RE = re.compile("I" + NUM)
+ARC_J_RE = re.compile("J" + NUM)
+ARC_R_RE = re.compile("R" + NUM)
+CMD_RE = re.compile(r"([GM]\d+)")
 
 # (nozzle_min, nozzle_max, bed_max) per material.
 MATERIALS = {
@@ -32,48 +41,80 @@ MATERIALS = {
 
 
 def motion_extents(lines):
-    """Track the toolhead across G0/G1/G2/G3 moves, honoring absolute vs
-    relative positioning (G90/G91), G92 resets, and G28 homing. Arc moves
-    contribute their endpoints (this pipeline slices with arc fitting off).
-    Relative moves accumulate onto the current position - an end-gcode
-    "G91 / G1 Z10" near the ceiling counts as real travel."""
-    pos = {"X": None, "Y": None, "Z": None}
+    """Track the PHYSICAL toolhead position across G0/G1/G2/G3 moves.
+
+    Honors G90/G91 (absolute/relative), G28 homing, and G92 datum shifts -
+    G92 re-bases the LOGICAL frame, so the physical offset is tracked and a
+    file cannot hide travel by moving the datum ("G1 Z200 / G92 Z0 / G1
+    Z200" counts as 400mm of Z). Arcs (G2/G3) are bounded conservatively by
+    the full circle around their center (R-form arcs by endpoints +- |R|).
+    Also reports whether the file disables firmware soft endstops (M211 S0),
+    which removes the printer's own last line of defense."""
+    phys = {"X": None, "Y": None, "Z": None}    # true machine position
+    offset = {"X": 0.0, "Y": 0.0, "Z": 0.0}    # logical = physical - offset
     seen = {"X": [], "Y": [], "Z": []}
     absolute = True
+    m211_off = False
     for line in lines:
-        code = line.split(";", 1)[0].strip()
+        code = line.split(";", 1)[0].strip().upper()
         if not code:
             continue
-        cmd = code.split(None, 1)[0].upper()
+        m = CMD_RE.match(code)
+        if not m:
+            continue
+        cmd = m.group(1)
         if cmd == "G90":
             absolute = True
             continue
         if cmd == "G91":
             absolute = False
             continue
+        if cmd == "M211" and re.search(r"S0(?!\d)", code):
+            m211_off = True
+            continue
         if cmd == "G28":
-            axes = [a for a in "XYZ" if a in code.upper()] or list("XYZ")
+            axes = [a for a in "XYZ" if a in code[3:]] or list("XYZ")
             for ax in axes:
-                pos[ax] = 0.0
+                phys[ax] = 0.0
+                offset[ax] = 0.0
                 seen[ax].append(0.0)
             continue
         if cmd == "G92":
             for ax, rx in AXIS_RE.items():
-                m = rx.search(code)
-                if m:
-                    pos[ax] = float(m.group(1))
+                mm = rx.search(code)
+                if mm:
+                    offset[ax] = (phys[ax] or 0.0) - float(mm.group(1))
             continue
         if cmd not in ("G0", "G1", "G2", "G3"):
             continue
+        start = dict(phys)
         for ax, rx in AXIS_RE.items():
-            m = rx.search(code)
-            if m:
-                v = float(m.group(1))
-                pos[ax] = v if (absolute or pos[ax] is None) else pos[ax] + v
+            mm = rx.search(code)
+            if mm:
+                v = float(mm.group(1))
+                if absolute or phys[ax] is None:
+                    phys[ax] = v + offset[ax]
+                else:
+                    phys[ax] += v
         for ax in "XYZ":
-            if pos[ax] is not None:
-                seen[ax].append(pos[ax])
-    return seen
+            if phys[ax] is not None:
+                seen[ax].append(phys[ax])
+        if cmd in ("G2", "G3") and start["X"] is not None and start["Y"] is not None:
+            mi, mj = ARC_I_RE.search(code), ARC_J_RE.search(code)
+            if mi or mj:
+                i = float(mi.group(1)) if mi else 0.0
+                jv = float(mj.group(1)) if mj else 0.0
+                cx, cy = start["X"] + i, start["Y"] + jv
+                r = (i * i + jv * jv) ** 0.5
+                seen["X"] += [cx - r, cx + r]
+                seen["Y"] += [cy - r, cy + r]
+            else:
+                mr = ARC_R_RE.search(code)
+                if mr and phys["X"] is not None:
+                    r = abs(float(mr.group(1)))
+                    seen["X"] += [start["X"] - r, phys["X"] + r]
+                    seen["Y"] += [start["Y"] - r, phys["Y"] + r]
+    return seen, m211_off
 
 
 def main():
@@ -112,7 +153,9 @@ def main():
         if t > a.bed_max:
             failures.append(f"bed {t}C above {a.bed_max}C")
 
-    seen = motion_extents(lines)
+    seen, m211_off = motion_extents(lines)
+    if m211_off:
+        failures.append("M211 S0 disables the firmware's soft endstops - refused")
     limits = {"X": (0.0, a.max_x), "Y": (0.0, a.max_y), "Z": (0.0, a.max_z)}
     extents = {}
     for ax, (lo, hi) in limits.items():

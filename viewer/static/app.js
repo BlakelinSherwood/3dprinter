@@ -378,7 +378,8 @@ function updateStages() {
     dl.setAttribute('download', `${m.name}.stl`);
     dl.classList.remove('off');
   } else dl.classList.add('off');
-  for (const id of ['rotx', 'roty', 'rotz', 'rotreset', 'generate'])
+  for (const id of ['rotx', 'roty', 'rotz', 'rotreset', 'generate',
+                    'photobtn', 'bpbtn', 'importbtn', 'findbtn'])
     $(id).disabled = busy;
   renderPrintsum();
 }
@@ -787,6 +788,7 @@ $('importbtn').onclick = () => $('importfile').click();
 $('importfile').onchange = () => {
   const f = $('importfile').files[0];
   if (!f) return;
+  if (busy) { log('wait for the current operation to finish first', 'bad'); $('importfile').value = ''; return; }
   if (f.size > 60 * 1024 * 1024) { log('mesh too large (60MB max)', 'bad'); return; }
   const rd = new FileReader();
   rd.onload = async () => {
@@ -800,6 +802,7 @@ $('importfile').onchange = () => {
       ok = true;
       await refreshModels(res.model);
       $('scale').value = 1;
+      rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
       await doGenerate();
       log(`${res.model} imported`, 'ok');
       stageMsg(1, `${res.model} imported`, 'ok');
@@ -943,8 +946,10 @@ $('fgo').onclick = doSearch;
 $('fq').addEventListener('keydown', (e) => { if (e.key === 'Enter') doSearch(); });
 
 $('furlgo').onclick = async () => {
+  if (busy) return;
   const url = $('furl').value.trim();
   if (!url) return;
+  setBusy(true);
   $('furlgo').disabled = true; $('furlgo').textContent = '…';
   try {
     const res = await api('/api/import_url', { url });
@@ -958,6 +963,7 @@ $('furlgo').onclick = async () => {
     }
   } catch (e) { log(e.message, 'bad'); }
   $('furlgo').disabled = false; $('furlgo').textContent = 'Import';
+  setBusy(false);
 };
 
 // ---------------------------- AI generation lane ----------------------------
@@ -991,6 +997,7 @@ $('bpclose').onclick = () => { $('bp').hidden = true; };
 $('bpfile').onchange = () => {
   const f = $('bpfile').files[0];
   if (!f) return;
+  if (busy) { log('wait for the current operation to finish first', 'bad'); $('bpfile').value = ''; return; }
   const rd = new FileReader();
   rd.onload = async () => {
     $('bpfile').value = '';

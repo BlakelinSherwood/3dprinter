@@ -268,7 +268,10 @@ def save_import(name, data_b64):
     if ext not in MESH_EXTS:
         raise ValueError(f"unsupported mesh type {ext or '(none)'} - "
                          f"accepted: {', '.join(sorted(MESH_EXTS))}")
-    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_") or "import"
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_.-")[:80] \
+        or "import"
+    if not stem[0].isalnum():
+        stem = "m_" + stem
     IMPORTS.mkdir(parents=True, exist_ok=True)
     path = IMPORTS / f"{stem}.stl"
     (IMPORTS / f"{stem}.orient.json").unlink(missing_ok=True)
@@ -690,7 +693,10 @@ def describe(mode, name, description, image=None, focus=None):
                 # code loads the RAW mesh file, so invert the whole chain.
                 import numpy as np
                 p = np.array([float(v) for v in focus["point"]])
-                scale_f, _ = parse_scale(focus.get("scale") or 1.0)
+                try:
+                    scale_f, _ = parse_scale(focus.get("scale") or 1.0)
+                except Exception:
+                    scale_f = 1.0
                 rot_f = norm_rot(focus.get("rot"))
                 tris_t = tris.copy()
                 M = R = None
@@ -723,6 +729,24 @@ def describe(mode, name, description, image=None, focus=None):
     else:
         original = None
         task = f"Write a new model for this request: {description}"
+
+    if focus and focus.get("point") and not mesh_base and mode == "edit":
+        # Parametric models are edited in their own unscaled, unrotated
+        # frame; the click came from the displayed frame. (The bed-drop is
+        # ~0 for parametric parts, which build resting on z=0.)
+        try:
+            _sf, _ = parse_scale(focus.get("scale") or 1.0)
+        except Exception:
+            _sf = 1.0
+        _rf = norm_rot(focus.get("rot"))
+        if _sf != 1.0 or (_rf and any(_rf)):
+            import numpy as np
+            _p = np.array([float(v) for v in focus["point"]])
+            if _sf != 1.0:
+                _p = _p / _sf
+            if _rf and any(_rf):
+                _p = _p @ rotation_matrix(_rf)
+            focus = dict(focus, point=[round(float(v), 2) for v in _p])
 
     if mode == "edit" and focus and focus.get("point"):
         x, y, z = (round(float(v), 2) for v in focus["point"])
@@ -765,7 +789,8 @@ def describe(mode, name, description, image=None, focus=None):
                 out_name = f"{name}_mod" if mesh_base else name
             else:
                 m = re.match(r"#\s*model:\s*([a-zA-Z0-9_]+)", code)
-                out_name = (m.group(1).lower() if m else slugify(description))[:40]
+                out_name = (m.group(1).lower() if m else slugify(description))
+                out_name = out_name.strip("_")[:40] or "part"
             path = MODELS / f"{out_name}.py"
             if mode == "edit" and original is None and path.is_file():
                 # re-editing a mesh-mod: keep the working version restorable
@@ -2065,8 +2090,10 @@ class Handler(BaseHTTPRequestHandler):
         # to 127.0.0.1 cross-site; the browser always attaches Origin there.
         origin = self.headers.get("Origin")
         if origin:
-            o_host = urllib.parse.urlparse(origin).hostname
-            if o_host not in ("127.0.0.1", "localhost", "::1"):
+            o = urllib.parse.urlparse(origin)
+            my_port = self.server.server_address[1]
+            if (o.hostname not in ("127.0.0.1", "localhost", "::1")
+                    or (o.port or (443 if o.scheme == "https" else 80)) != my_port):
                 return self._send(403, {"error": "cross-origin request refused"})
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
         if host not in ("127.0.0.1", "localhost", "[::1]", ""):
@@ -2076,9 +2103,14 @@ class Handler(BaseHTTPRequestHandler):
             if n > 80 * 1024 * 1024:
                 return self._send(413, {"error": "request too large"})
             req = json.loads(self.rfile.read(n) or b"{}")
-            for k in ("model", "name"):
-                if k in req:
-                    req[k] = safe_name(req[k])
+            if "model" in req:
+                req["model"] = safe_name(req["model"])
+            if self.path == "/api/files/delete" and "name" in req:
+                nm = str(req["name"])
+                if "/" in nm or "\\" in nm or ".." in nm:
+                    raise ValueError(f"bad file name {nm!r}")
+            # /api/import "name" is a raw OS filename - save_import derives
+            # a safe stem from it itself
             if self.path == "/api/generate":
                 return self._send(200, generate(req["model"], req.get("params"),
                                                 req.get("scale", 1.0),
