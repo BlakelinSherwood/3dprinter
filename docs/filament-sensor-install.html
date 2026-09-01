@@ -1,0 +1,278 @@
+<title>Filament Sensor Setup</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --bg: #f1efe9; --surface: #fbfaf7; --sunk: #e9e6df;
+    --ink: #23272c; --dim: #63696f; --edge: #d8d4ca;
+    --accent: #2f5d7c; --accent-ink: #ffffff;
+    --danger: #b0271d; --danger-bg: #f7e6e3; --danger-edge: #e3b4ad;
+    --warn: #9a6200; --warn-bg: #f6eddb; --warn-edge: #e2cfa4;
+    --ok: #2f7d4f; --ok-bg: #e4f0e7; --ok-edge: #b3d4be;
+    --pin-power: #2f5d7c; --pin-sig: #2f7d4f; --pin-gnd: #3a3f45;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171b; --surface: #1c2026; --sunk: #101317;
+      --ink: #e7e9ec; --dim: #98a0a8; --edge: #2b3038;
+      --accent: #63a4d4; --accent-ink: #0c1116;
+      --danger: #ff6f64; --danger-bg: #2c1613; --danger-edge: #5a2a24;
+      --warn: #ffb638; --warn-bg: #2a2213; --warn-edge: #574526;
+      --ok: #55c98d; --ok-bg: #14251c; --ok-edge: #2c4a38;
+      --pin-power: #63a4d4; --pin-sig: #55c98d; --pin-gnd: #6b747d;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171b; --surface: #1c2026; --sunk: #101317;
+    --ink: #e7e9ec; --dim: #98a0a8; --edge: #2b3038;
+    --accent: #63a4d4; --accent-ink: #0c1116;
+    --danger: #ff6f64; --danger-bg: #2c1613; --danger-edge: #5a2a24;
+    --warn: #ffb638; --warn-bg: #2a2213; --warn-edge: #574526;
+    --ok: #55c98d; --ok-bg: #14251c; --ok-edge: #2c4a38;
+    --pin-power: #63a4d4; --pin-sig: #55c98d; --pin-gnd: #6b747d;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.62 "IBM Plex Sans", system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 32px 18px 64px; }
+  h1, h2, .kicker, .pinnum, .steplabel {
+    font-family: "Chakra Petch", system-ui, sans-serif;
+  }
+  .kicker { font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+            color: var(--accent); font-weight: 600; }
+  h1 { font-size: 2.05rem; font-weight: 700; line-height: 1.1; margin: 10px 0 0;
+       text-wrap: balance; letter-spacing: .3px; }
+  .lede { color: var(--dim); margin-top: 12px; font-size: 1.04rem; max-width: 60ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 18px; }
+  .chip { font-family: "IBM Plex Mono", monospace; font-size: .72rem;
+          background: var(--sunk); border: 1px solid var(--edge); color: var(--dim);
+          padding: 4px 9px; border-radius: 5px; }
+  h2 { font-size: 1.28rem; font-weight: 600; margin: 40px 0 4px;
+       display: flex; align-items: baseline; gap: 10px; }
+  h2 .n { font-family: "IBM Plex Mono", monospace; color: var(--accent);
+          font-size: .95rem; font-weight: 600; }
+  .sect-sub { color: var(--dim); font-size: .92rem; margin: 2px 0 16px; }
+  p { margin: 10px 0; }
+  code, .mono { font-family: "IBM Plex Mono", monospace; }
+  code { background: var(--sunk); border: 1px solid var(--edge); border-radius: 5px;
+         padding: .08em .4em; font-size: .85em; overflow-wrap: anywhere; }
+  .card { background: var(--surface); border: 1px solid var(--edge);
+          border-radius: 12px; padding: 18px 18px; margin: 16px 0; }
+  /* callouts */
+  .call { border-radius: 12px; padding: 15px 17px; margin: 18px 0;
+          border: 1px solid var(--edge); display: flex; gap: 13px; align-items: flex-start; }
+  .call .ic { font-size: 1.3rem; line-height: 1.3; flex: 0 0 auto; }
+  .call b { font-weight: 600; }
+  .call.danger { background: var(--danger-bg); border-color: var(--danger-edge); }
+  .call.danger b { color: var(--danger); }
+  .call.warn { background: var(--warn-bg); border-color: var(--warn-edge); }
+  .call.warn b { color: var(--warn); }
+  .call.ok { background: var(--ok-bg); border-color: var(--ok-edge); }
+  .call.ok b { color: var(--ok); }
+  /* pin diagram */
+  .pinwrap { display: flex; gap: 22px; flex-wrap: wrap; align-items: flex-start; }
+  .header-blk { background: var(--surface); border: 1px solid var(--edge);
+                border-radius: 12px; padding: 16px 18px; flex: 1 1 260px; }
+  .hdr-note { font-family: "IBM Plex Mono", monospace; font-size: .68rem;
+              color: var(--dim); text-align: center; margin-bottom: 10px;
+              letter-spacing: .04em; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+          max-width: 320px; margin: 0 auto; }
+  .pin { display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+         border: 1px solid var(--edge); border-radius: 7px; background: var(--sunk);
+         font-size: .78rem; min-height: 40px; }
+  .pin.right { flex-direction: row-reverse; text-align: right; }
+  .pinnum { font-weight: 700; font-size: .82rem; width: 20px; text-align: center;
+            flex: 0 0 auto; color: var(--dim); }
+  .pin .role { line-height: 1.15; }
+  .pin .role small { display: block; color: var(--dim); font-size: .68rem;
+                     font-family: "IBM Plex Mono", monospace; }
+  .pin.use { border-width: 2px; background: var(--surface); }
+  .pin.power { border-color: var(--pin-power); }
+  .pin.power .pinnum, .pin.power .role b { color: var(--pin-power); }
+  .pin.sig { border-color: var(--pin-sig); }
+  .pin.sig .pinnum, .pin.sig .role b { color: var(--pin-sig); }
+  .pin.gnd { border-color: var(--pin-gnd); }
+  .pin.gnd .pinnum, .pin.gnd .role b { color: var(--ink); }
+  .pin.no { border-color: var(--danger-edge); background: var(--danger-bg); }
+  .pin.no .pinnum, .pin.no .role b { color: var(--danger); }
+  .legend { flex: 1 1 200px; }
+  .legend .row { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 14px;
+                 font-size: .9rem; }
+  .swatch { width: 14px; height: 14px; border-radius: 4px; flex: 0 0 auto; margin-top: 3px;
+            border: 2px solid; }
+  .swatch.power { border-color: var(--pin-power); }
+  .swatch.sig { border-color: var(--pin-sig); }
+  .swatch.gnd { border-color: var(--pin-gnd); }
+  .swatch.no { border-color: var(--danger); background: var(--danger-bg); }
+  .legend .row b { font-family: "IBM Plex Mono", monospace; }
+  /* steps */
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 14px 0; }
+  ol.steps > li { counter-increment: s; position: relative; padding: 0 0 4px 42px;
+                  margin: 0 0 16px; }
+  ol.steps > li::before {
+    content: counter(s); position: absolute; left: 0; top: -1px;
+    width: 28px; height: 28px; border-radius: 8px; background: var(--accent);
+    color: var(--accent-ink); font-family: "Chakra Petch", sans-serif; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-size: .92rem;
+  }
+  ol.steps > li b { font-weight: 600; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 12px 0;
+        font-size: .92rem; }
+  .kv dt { font-family: "IBM Plex Mono", monospace; color: var(--accent);
+           font-weight: 500; }
+  .kv dd { margin: 0; }
+  ul.tight { margin: 8px 0; padding-left: 20px; }
+  ul.tight li { margin: 6px 0; }
+  .divide { height: 1px; background: var(--edge); border: 0; margin: 40px 0 0; }
+  footer { color: var(--dim); font-size: .82rem; margin-top: 22px; }
+  footer a { color: var(--accent); }
+  a { color: var(--accent); }
+  @media (max-width: 480px) {
+    h1 { font-size: 1.7rem; }
+    .wrap { padding: 24px 14px 52px; }
+  }
+</style>
+
+<div class="wrap">
+  <div class="kicker">Ender 3 V2 · OctoPrint on Raspberry Pi</div>
+  <h1>Filament Sensor Setup</h1>
+  <p class="lede">Wiring the BigTreeTech SFS V1.0 motion sensor to your Pi so a broken or
+  stuck filament pauses the print instead of running dry all night. No printer firmware
+  flash — it all lives on the Pi.</p>
+  <div class="chips">
+    <span class="chip">Pi 3 Model B+</span>
+    <span class="chip">OctoPi 1.1.0 · Bookworm</span>
+    <span class="chip">OctoPrint 1.11.8</span>
+    <span class="chip">BTT SFS V1.0</span>
+  </div>
+
+  <div class="call danger">
+    <span class="ic">⛔</span>
+    <div><b>The one rule that protects your Pi:</b> the sensor's power wire goes to a
+    <b>3.3V</b> pin, <b>never a 5V pin</b>. The Pi's GPIO pins are not 5-volt tolerant —
+    powering the sensor from 5V pushes 5V onto the signal wire and can permanently damage
+    the Pi. Do all wiring with the <b>Pi and printer powered off</b>.</div>
+  </div>
+
+  <h2><span class="n">01</span> Identify the three wires</h2>
+  <p class="sect-sub">The SFS V1.0 has exactly three wires. Find them by the letters
+  printed on the little sensor board — <b>not</b> by color (yours is a reseller bundle, so
+  wire colors aren't guaranteed).</p>
+  <dl class="kv">
+    <dt>S</dt><dd><b>Signal</b> (SIN) — the wire that reports filament movement.</dd>
+    <dt>G</dt><dd><b>Ground</b> (GND).</dd>
+    <dt>V</dt><dd><b>Power</b> (VDD) — must be connected; the sensor is active, not a plain switch.</dd>
+  </dl>
+  <p>If your cable ends in a single plastic plug, it won't fit the Pi's pins — split it into
+  <b>three separate female jumper leads</b> so each wire lands on its own pin. If you have a
+  multimeter, buzz out which bare end is S / G / V and tape a label on each.</p>
+
+  <h2><span class="n">02</span> Wire it to the Pi header</h2>
+  <p class="sect-sub">Pin 1 is the corner pin nearest the microSD-card slot. All three pins
+  you need are in the first six rows, on the outer edge.</p>
+  <div class="pinwrap">
+    <div class="header-blk">
+      <div class="hdr-note">◗ microSD side — pin 1 is this corner</div>
+      <div class="grid">
+        <div class="pin use power"><span class="pinnum">1</span><span class="role"><b>3.3V</b><small>← wire V</small></span></div>
+        <div class="pin right no"><span class="pinnum">2</span><span class="role"><b>5V</b><small>never</small></span></div>
+        <div class="pin"><span class="pinnum">3</span><span class="role">GPIO2</span></div>
+        <div class="pin right no"><span class="pinnum">4</span><span class="role"><b>5V</b><small>never</small></span></div>
+        <div class="pin"><span class="pinnum">5</span><span class="role">GPIO3</span></div>
+        <div class="pin right"><span class="pinnum">6</span><span class="role">GND</span></div>
+        <div class="pin"><span class="pinnum">7</span><span class="role">GPIO4</span></div>
+        <div class="pin right"><span class="pinnum">8</span><span class="role">GPIO14</span></div>
+        <div class="pin use gnd"><span class="pinnum">9</span><span class="role"><b>GND</b><small>← wire G</small></span></div>
+        <div class="pin right"><span class="pinnum">10</span><span class="role">GPIO15</span></div>
+        <div class="pin use sig"><span class="pinnum">11</span><span class="role"><b>GPIO17</b><small>← wire S</small></span></div>
+        <div class="pin right"><span class="pinnum">12</span><span class="role">GPIO18</span></div>
+      </div>
+    </div>
+    <div class="legend">
+      <div class="row"><span class="swatch power"></span><div><b>V → pin 1</b> (3.3V power)</div></div>
+      <div class="row"><span class="swatch gnd"></span><div><b>G → pin 9</b> (ground)</div></div>
+      <div class="row"><span class="swatch sig"></span><div><b>S → pin 11</b> (GPIO17 / “BCM 17”)</div></div>
+      <div class="row"><span class="swatch no"></span><div><b>pins 2 &amp; 4</b> are 5V — keep every wire away from them</div></div>
+    </div>
+  </div>
+  <div class="call ok">
+    <span class="ic">✓</span>
+    <div><b>Sanity check before anything else:</b> power on just the Pi (printer can stay
+    off). The sensor's little LED ring should light up and nothing should get warm. If
+    anything heats up or smells, pull power — a wire is on the wrong pin.</div>
+  </div>
+
+  <h2><span class="n">03</span> Mount it on the filament path</h2>
+  <p class="sect-sub">The sensor sits inline, between the spool and the extruder, so
+  filament passes through it on the way in.</p>
+  <ul class="tight">
+    <li>Thread filament: <b>spool → PTFE tube → sensor INLET → short tube → extruder inlet</b>.</li>
+    <li>Push each PTFE tube <b>all the way home</b> into the push-fit couplers, or you'll get gaps that snag.</li>
+    <li>Fix the sensor to the frame with the two M3 screws / a printed bracket so it doesn't dangle and tug the filament.</li>
+  </ul>
+
+  <h2><span class="n">04</span> Install the OctoPrint plugin</h2>
+  <p class="sect-sub">Because your Pi runs Bookworm, use the modern <b>libgpiod</b> plugin —
+  the older ones need an extra fix on Bookworm. We'll do this part together.</p>
+  <ol class="steps">
+    <li>In OctoPrint: <b>Settings (wrench) → Plugin Manager → Get More…</b></li>
+    <li>In the <b>“…from URL”</b> box paste:
+      <br><code>https://github.com/tabahi/Octoprint-Filament-Motion-Sensor/archive/master.zip</code>
+      <br>Click Install, then <b>Restart OctoPrint</b> when asked.</li>
+    <li>Open the plugin's settings and set:
+      <dl class="kv">
+        <dt>Enable</dt><dd>on</dd>
+        <dt>GPIO pin</dt><dd><b>17</b> (this is BCM numbering = physical pin 11, where wire S is)</dd>
+        <dt>Distance</dt><dd>start at <b>15–20&nbsp;mm</b> (the sensor only ticks once per 7&nbsp;mm, so a bigger number avoids false pauses on slow layers)</dd>
+        <dt>Timeout</dt><dd><b>~90 sec</b> to start (a safety backstop; shorten later if real jams take too long to catch)</dd>
+        <dt>Pause action</dt><dd>leave on the default <code>@pause</code></dd>
+      </dl>
+    </li>
+    <li>In <b>Settings → Serial Connection → “Pausing commands”</b>, add <code>M600</code> so a
+      detected stall actually pauses (your stock firmware may not honor M600 on its own —
+      this makes OctoPrint do the pausing).</li>
+    <li><b>Optional but nice:</b> in <b>Settings → GCODE Scripts → “After print job is
+      paused”</b>, add a small lift-and-park so a paused nozzle doesn't melt a blob into the
+      print: <code>G91</code> / <code>G1 Z5 F600</code> / <code>G90</code> / <code>G1 X10 Y10 F3000</code>.</li>
+  </ol>
+
+  <h2><span class="n">05</span> Test it safely — before trusting a real print</h2>
+  <p class="sect-sub">Three quick checks. Do all three before you leave a print unattended.</p>
+  <ol class="steps">
+    <li><b>Does the pin see the sensor?</b> On the Pi's terminal run <code>pinctrl get 17</code>
+      (or <code>raspi-gpio get 17</code>) while you slowly push filament through the sensor
+      by hand. The reading must <b>flip between “lo” and “hi”</b> as filament moves. No
+      flip → recheck wire S on pin 11 and wire V on pin 1.</li>
+    <li><b>Does the plugin see it?</b> Use the plugin's <b>“Test sensor”</b> button and hand-feed
+      filament — the status should change as it moves.</li>
+    <li><b>Does it actually pause?</b> Start a <b>short throwaway print</b>, let it lay a few
+      lines, then <b>flip open the extruder idler arm</b> so the filament stops feeding
+      <i>without</i> grinding. Within your distance/timeout the print should pause and park.
+      Flip the arm back, reload, resume or cancel. This is fully reversible.</li>
+  </ol>
+
+  <div class="call warn">
+    <span class="ic">⚙️</span>
+    <div><b>If the plugin can't find the pin on your Pi 3B+:</b> this plugin is solid but its
+    author flags possible trouble “on RPi3 and older.” Two fallbacks — try the
+    <code>hviet17</code> fork of the same plugin, or install the older
+    <code>maocypher</code> plugin and, if it logs <b>“Failed to add edge detection,”</b> run in
+    the OctoPrint environment: <code>~/oprint/bin/pip install rpi-lgpio</code> then restart.
+    I'll handle whichever path we need.</div>
+  </div>
+
+  <hr class="divide">
+  <footer>
+    <p><b>Your printer's safety rules still stand:</b> nothing prints until you say so, with
+    you present for the first layer. This sensor is a safety net for what happens
+    <i>after</i> a good start — it can't replace the first-layer check.</p>
+    <p style="margin-top:10px">Verified against the official BigTreeTech SFS V1.0 manual and
+    the plugin source. Pin map for the Raspberry Pi 40-pin header (identical on the 3B+).
+    Built for Blake's rig — we'll walk through it together when the sensor arrives.</p>
+  </footer>
+</div>
