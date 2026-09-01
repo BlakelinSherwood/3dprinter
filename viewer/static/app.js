@@ -460,6 +460,8 @@ function printSettings() {
   return {
     layer_height: $('ps_lh').value,
     infill_pct: parseInt($('ps_infill').value) || 15,
+    infill_pattern: $('ps_pattern').value,
+    finish: $('ps_finish').value,
     supports: $('ps_supports').checked,
     brim: $('ps_brim').checked,
     material: $('ps_material').value,
@@ -478,6 +480,8 @@ function renderPrintsum() {
   const extras = [];
   if (s.supports) extras.push('supports');
   if (s.brim) extras.push('brim');
+  if (s.infill_pattern !== 'grid') extras.push(s.infill_pattern + ' infill');
+  if (s.finish === 'textured') extras.push('textured');
   if (s.infill_pct !== 15) extras.push(`${s.infill_pct}% infill`);
   $('printsum').innerHTML =
     `Loaded: <b>${materialLabel()}</b>` + (extras.length ? ` · ${extras.join(' · ')}` : '');
@@ -507,11 +511,13 @@ try {
     $('ps_material').value = ps.material ?? 'pla';
     if (!$('ps_material').value) $('ps_material').value = 'pla';
     $('ps_copies').value = ps.copies ?? 1;
+    $('ps_pattern').value = ps.infill_pattern ?? 'grid';
+    $('ps_finish').value = ps.finish ?? 'smooth';
   }
 } catch {}
 syncQuality();
 
-for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies']) {
+for (const id of ['ps_lh', 'ps_infill', 'ps_supports', 'ps_brim', 'ps_material', 'ps_copies', 'ps_pattern', 'ps_finish']) {
   $(id).onchange = () => {
     try { localStorage.setItem('studio.printset', JSON.stringify(printSettings())); } catch {}
     if (id === 'ps_lh') syncQuality();

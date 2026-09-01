@@ -856,13 +856,57 @@ SETTING_KEYS = {
 }
 
 
+# Modern-slicer quality keys, all verified against the installed Orca 2.4.2
+# CLI (see docs/research: orca-beta). These are unconditional wins with no
+# user decision attached, so every slice gets them - that is what makes the
+# studio's default output look a generation newer than stock profiles:
+#   scarf seams   - the visible seam line all but disappears on curved walls
+#   adaptive Z    - variable layer height where the geometry curves (ZAA)
+#   polyholes     - vertical holes print round and to size
+#   bridge/seam/flow refinements - cleaner overhangs, corners, small areas
+QUALITY_BASE = {
+    "seam_slope_type": "external", "seam_slope_conditional": "1",
+    "scarf_angle_threshold": "155", "seam_slope_start_height": "10%",
+    "seam_slope_min_length": "10", "seam_slope_steps": "10",
+    "scarf_joint_speed": "10", "scarf_joint_flow_ratio": "0.98",
+    "precise_z_height": "1",
+    "zaa_enabled": "1", "zaa_minimize_perimeter_height": "35",
+    "zaa_min_z": "0.04",
+    "hole_to_polyhole": "1", "hole_to_polyhole_threshold": "0.01",
+    "slowdown_for_curled_perimeters": "1",
+    "extra_perimeters_on_overhangs": "1",
+    "enable_extra_bridge_layer": "apply_to_all",
+    "internal_bridge_density": "75%",
+    "small_area_infill_flow_compensation": "1",
+    "gap_fill_target": "everywhere",
+    "wall_sequence": "inner wall/outer wall/inner wall",
+    "staggered_inner_seams": "1",
+    "counterbore_hole_bridging": "sacrificiallayer",
+}
+
+INFILL_PATTERNS = {
+    "grid": ("grid", "standard"),
+    "lightning": ("lightning", "lightning - fastest, uses least material"),
+    "gyroid": ("gyroid", "gyroid - strong in every direction"),
+    "adaptive": ("adaptivecubic", "adaptive cubic - dense near walls"),
+}
+
+FUZZY_KEYS = {
+    "fuzzy_skin": "external", "fuzzy_skin_mode": "displacement",
+    "fuzzy_skin_noise_type": "voronoi", "fuzzy_skin_thickness": "0.3",
+    "fuzzy_skin_point_distance": "0.8", "fuzzy_skin_scale": "0.5",
+    "fuzzy_skin_octaves": "4", "fuzzy_skin_persistence": "0.5",
+    "fuzzy_skin_first_layer": "0",
+}
+
+
 def build_process_override(settings):
     """Merge per-print settings onto the repo process profile. Returns a path
     to a temp process json, or None when everything is at profile defaults."""
-    if not settings:
-        return None
+    settings = settings or {}
     base = json.loads((REPO / "profiles/ender3v2/process.json").read_text())
-    changed = []
+    base.update(QUALITY_BASE)
+    changed = ["modern seams/Z"]   # the quality base always applies
     lh = str(settings.get("layer_height") or "").strip()
     if lh and lh in SETTING_KEYS["layer_height"] and lh != str(base.get("layer_height")):
         base["layer_height"] = lh
@@ -873,16 +917,23 @@ def build_process_override(settings):
         if f"{infill}%" != base.get("sparse_infill_density"):
             base["sparse_infill_density"] = f"{infill}%"
             changed.append(f"infill {infill}%")
+    pattern = str(settings.get("infill_pattern") or "").strip().lower()
+    if pattern and pattern in INFILL_PATTERNS and pattern != "grid":
+        base["sparse_infill_pattern"] = INFILL_PATTERNS[pattern][0]
+        changed.append(f"{pattern} infill")
+    if str(settings.get("finish") or "").lower() == "textured":
+        base.update(FUZZY_KEYS)
+        changed.append("textured surface")
     if settings.get("supports"):
         base["enable_support"] = "1"
         base["support_type"] = "tree(auto)"
+        base["support_style"] = "organic"
+        base["tree_support_tip_diameter"] = "0.8"
         changed.append("tree supports")
     if settings.get("brim"):
         base["brim_type"] = "outer_only"
         base["brim_width"] = "5"
         changed.append("brim")
-    if not changed:
-        return None
     base["name"] = base["name"] + " (override)"
     OUTPUT.mkdir(exist_ok=True)
     path = OUTPUT / "_process_override.json"

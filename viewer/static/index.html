@@ -346,6 +346,22 @@
                 <label for="ps_infill">infill %</label>
                 <input type="number" id="ps_infill" value="15" min="0" max="100" step="5">
               </div>
+              <div class="field">
+                <label for="ps_pattern">infill style</label>
+                <select id="ps_pattern">
+                  <option value="grid" selected>standard</option>
+                  <option value="lightning">lightning (fast)</option>
+                  <option value="gyroid">gyroid (strong)</option>
+                  <option value="adaptive">adaptive cubic</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="ps_finish">surface finish</label>
+                <select id="ps_finish">
+                  <option value="smooth" selected>smooth</option>
+                  <option value="textured">textured (fuzzy)</option>
+                </select>
+              </div>
               <label class="check"><input type="checkbox" id="ps_supports"> tree supports</label>
               <label class="check"><input type="checkbox" id="ps_brim"> brim</label>
               <div class="field">
