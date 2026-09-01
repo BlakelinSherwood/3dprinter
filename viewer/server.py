@@ -263,8 +263,8 @@ def mesh_volume(tris):
 #   BLENDER_EXTS- formats only Blender reads; converted through it headlessly
 MESH_EXTS = {".stl", ".glb", ".gltf", ".obj", ".ply", ".3mf", ".off"}
 BREP_EXTS = {".step", ".stp", ".iges", ".igs", ".brep"}
-BLENDER_EXTS = {".fbx", ".dae", ".3ds", ".x3d", ".wrl", ".usd", ".usdz",
-                ".usdc", ".usda", ".blend"}
+# Blender 4.5 import operators only (it dropped the 3DS and X3D/VRML importers)
+BLENDER_EXTS = {".fbx", ".dae", ".usd", ".usdz", ".usdc", ".usda", ".blend"}
 IMPORT_EXTS = MESH_EXTS | BREP_EXTS | BLENDER_EXTS
 
 
@@ -322,7 +322,7 @@ def save_import(name, data_b64):
         raise ValueError(
             f"unsupported file type {ext or '(none)'}. Accepted: meshes "
             f"(STL, OBJ, PLY, OFF, GLB, GLTF, 3MF), CAD solids (STEP, STP, "
-            f"IGES, IGS, BREP), and via Blender (FBX, DAE, 3DS, X3D, USD). "
+            f"IGES, IGS, BREP), and via Blender (FBX, DAE/Collada, USD). "
             f"For SolidWorks/DataCAD, export to STEP first.")
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_.-")[:80] \
         or "import"

@@ -25,10 +25,6 @@ def do_import():
         bpy.ops.import_scene.fbx(filepath=src)
     elif ext == ".obj":
         bpy.ops.wm.obj_import(filepath=src)
-    elif ext == ".3ds":
-        bpy.ops.import_scene.max3ds(filepath=src)
-    elif ext in (".x3d", ".wrl"):
-        bpy.ops.import_scene.x3d(filepath=src)
     elif ext in (".usd", ".usdz", ".usdc", ".usda"):
         bpy.ops.wm.usd_import(filepath=src)
     elif ext in (".glb", ".gltf"):
