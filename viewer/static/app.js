@@ -740,7 +740,7 @@ function endProgress(ok) {
 let busy = false;
 function setBusy(b) {
   busy = b;
-  for (const id of ['buildnew', 'editsel', 'generate', 'refine', 'makeprint', 'solidify'])
+  for (const id of ['buildnew', 'editsel', 'generate', 'refine', 'makeprint', 'solidify', 'gangbtn'])
     $(id).disabled = b;
   updateStages();
 }
@@ -991,6 +991,61 @@ $('aifile').onchange = () => {
   };
   rd.readAsDataURL(f);
 };
+// -------------------- gang several models onto one plate --------------------
+$('gangbtn').onclick = () => {
+  const box = $('ganglist');
+  box.innerHTML = '';
+  const pickable = models.filter(m => !m.error && m.name !== 'combined_plate');
+  if (!pickable.length) { box.innerHTML = '<div class="fsub">no models yet</div>'; }
+  for (const m of pickable) {
+    const row = document.createElement('label');
+    row.className = 'gangrow';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.value = m.name;
+    cb.checked = (m.name === $('model').value);
+    cb.onchange = updateGangCount;
+    const nm = document.createElement('span');
+    nm.className = 'gn'; nm.textContent = m.name; nm.title = m.name;
+    const tag = document.createElement('span');
+    tag.className = 'gt'; tag.textContent = m.imported ? 'import' : 'part';
+    row.append(cb, nm, tag);
+    box.appendChild(row);
+  }
+  updateGangCount();
+  $('gang').hidden = false;
+};
+$('gangclose').onclick = () => { $('gang').hidden = true; };
+function gangSelected() {
+  return [...document.querySelectorAll('#ganglist input:checked')].map(c => c.value);
+}
+function updateGangCount() {
+  const n = gangSelected().length;
+  $('gangcount').textContent = `${n} selected`;
+  $('gango').disabled = n < 2;
+}
+$('gango').onclick = async () => {
+  if (busy) return;
+  const picked = gangSelected();
+  if (picked.length < 2) { log('pick at least two models to combine', 'bad'); return; }
+  setBusy(true);
+  log(`combining ${picked.length} models onto one plate…`, 'dim');
+  startProgress('combine', `packing ${picked.length} models onto the plate`, 30);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/combine', { models: picked }, 'combine');
+    ok = true;
+    $('gang').hidden = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('new combined plate');
+    log(`combined_plate ready — ${picked.length} models, slice & print together`, 'ok');
+    stageMsg(1, `combined ${picked.length} models onto one plate`, 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
 // ------------------- blueprint sheet -> views -> 3D -------------------
 let bpViews = [];
 $('bpbtn').onclick = () => $('bpfile').click();

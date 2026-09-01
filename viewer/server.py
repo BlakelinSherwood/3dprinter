@@ -1661,6 +1661,68 @@ def import_url(url):
 BLENDER = "/Applications/Blender.app/Contents/MacOS/Blender"
 
 
+def combine_models(names, gap=6.0):
+    """Pack several models side by side onto one build plate as a single
+    printable model, so one print produces the whole set. Each model is
+    generated at its natural size, then shelf-packed within the 220x220 bed."""
+    import numpy as np
+    import trimesh
+    names = [safe_name(n) for n in (names or [])]
+    if len(names) < 2:
+        raise ValueError("pick at least two models to combine onto one plate")
+    margin = 5.0
+    bed_w, bed_d = PLATE_X - 2 * margin, PLATE_Y - 2 * margin
+    items = []
+    for nm in names:
+        generate(nm, {})                       # refresh output/<nm>.stl at scale 1
+        stl = OUTPUT / f"{nm}.stl"
+        if not stl.is_file():
+            raise ValueError(f"could not build model '{nm}'")
+        m = trimesh.load(str(stl), force="mesh")
+        lo, hi = m.bounds
+        items.append({"nm": nm, "m": m, "lo": lo,
+                      "w": float(hi[0] - lo[0]), "h": float(hi[1] - lo[1])})
+    # tallest-first shelf (next-fit) packing - simple and predictable
+    items.sort(key=lambda it: it["h"], reverse=True)
+    placed, warnings, oversized = [], [], []
+    cx = cy = shelf_h = 0.0
+    for it in items:
+        if it["w"] > bed_w or it["h"] > bed_d:
+            oversized.append(it["nm"])
+        if cx > 0 and cx + it["w"] > bed_w:    # wrap to the next shelf
+            cy += shelf_h + gap
+            cx, shelf_h = 0.0, 0.0
+        m = it["m"].copy()
+        m.apply_translation([cx - it["lo"][0], cy - it["lo"][1], -it["lo"][2]])
+        placed.append(m)
+        cx += it["w"] + gap
+        shelf_h = max(shelf_h, it["h"])
+    total_h = cy + shelf_h
+    combined = trimesh.util.concatenate(placed)
+    # center the whole set on the plate, resting on z=0
+    lo, hi = combined.bounds
+    combined.apply_translation([-(lo[0] + hi[0]) / 2.0,
+                                -(lo[1] + hi[1]) / 2.0, -lo[2]])
+    stem = "combined_plate"
+    IMPORTS.mkdir(parents=True, exist_ok=True)
+    (IMPORTS / f"{stem}.orient.json").unlink(missing_ok=True)
+    combined.export(str(IMPORTS / f"{stem}.stl"))
+    (IMPORTS / f"{stem}.json").write_text(json.dumps(
+        {"title": f"{len(names)} models on one plate",
+         "source": "combined: " + ", ".join(names)}, indent=2))
+    result = generate(stem, {})
+    result["model"] = stem
+    if oversized:
+        result.setdefault("warnings", []).append(
+            "these don't fit the bed on their own: " + ", ".join(oversized))
+    if total_h > bed_d:
+        result.setdefault("warnings", []).append(
+            f"the set is {total_h:.0f}mm deep - too many for one {PLATE_Y:.0f}mm "
+            f"plate; combine fewer, or print in batches")
+    result["combined"] = names
+    return result
+
+
 def make_printable(name, voxel=0.8, target_mm=0.0):
     """Run the headless Blender solidify job on an import; produces a new
     import named <name>_solid with attribution carried over."""
@@ -2259,6 +2321,10 @@ class Handler(BaseHTTPRequestHandler):
                     solidify_scale, req["model"],
                     float(req.get("wall") or 1.6),
                     float(req.get("target_mm") or 0)))
+            if self.path == "/api/combine":
+                return self._send(200, start_job(
+                    combine_models, req.get("models"),
+                    float(req.get("gap") or 6.0)))
             if self.path == "/api/gen3d":
                 return self._send(200, start_job(
                     gen3d, req.get("image"), req.get("image_name"),
