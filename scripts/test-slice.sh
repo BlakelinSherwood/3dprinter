@@ -54,11 +54,18 @@ if [ "$rc" -ne 0 ]; then
   exit "$rc"
 fi
 
-unzip -p "$OUT_DIR/$BASE.3mf" Metadata/plate_1.gcode > "$OUT_DIR/$BASE.gcode"
+# Extract to a temp name and only rename into place after the safety check
+# passes: the final .gcode path never holds unchecked bytes, so a concurrent
+# or later upload can never race ahead of the gate.
+unzip -p "$OUT_DIR/$BASE.3mf" Metadata/plate_1.gcode > "$OUT_DIR/$BASE.gcode.tmp"
 
-lines=$(wc -l < "$OUT_DIR/$BASE.gcode")
-echo "Sliced OK: $OUT_DIR/$BASE.gcode ($lines lines of G-code)"
+lines=$(wc -l < "$OUT_DIR/$BASE.gcode.tmp")
 
-# Safety gate: PLA temperature ranges + build-volume containment. Non-zero exit
+# Safety gate: temperature envelope + build-volume containment. Non-zero exit
 # here means the G-code must not be printed.
-"$REPO_DIR/scripts/check-gcode.py" --material "$MATERIAL" "$OUT_DIR/$BASE.gcode"
+if ! "$REPO_DIR/scripts/check-gcode.py" --material "$MATERIAL" "$OUT_DIR/$BASE.gcode.tmp"; then
+  rm -f "$OUT_DIR/$BASE.gcode.tmp"
+  exit 1
+fi
+mv "$OUT_DIR/$BASE.gcode.tmp" "$OUT_DIR/$BASE.gcode"
+echo "Sliced OK: $OUT_DIR/$BASE.gcode ($lines lines of G-code)"

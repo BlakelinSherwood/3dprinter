@@ -48,6 +48,9 @@ MIME = {
 _module_cache = {}   # path -> (mtime, module)
 _generate_lock = threading.Lock()   # OCC is not thread-safe
 _codegen_lock = threading.Lock()    # one description job at a time
+_print_lock = threading.Lock()      # slice and upload never interleave: the
+                                    # upload safety check must see the same
+                                    # bytes the upload sends
 _jobs = {}                          # job id -> {status, result?, error?}
 
 
@@ -56,8 +59,12 @@ def start_job(fn, *args):
     Long codegen can't live inside one HTTP request - proxies kill idle
     connections after a couple of minutes."""
     import uuid
+    now = time.time()
+    for k in [k for k, j in list(_jobs.items())
+              if j["status"] != "running" and now - j["started"] > 6 * 3600]:
+        _jobs.pop(k, None)      # abandoned results (closed tab, lost poll)
     jid = uuid.uuid4().hex[:12]
-    _jobs[jid] = {"status": "running", "started": time.time()}
+    _jobs[jid] = {"status": "running", "started": now}
     def run():
         try:
             _jobs[jid]["result"] = fn(*args)
@@ -69,6 +76,15 @@ def start_job(fn, *args):
     return {"job": jid}
 
 PLATE_X, PLATE_Y, PLATE_Z = 220.0, 220.0, 250.0
+
+
+def safe_name(name):
+    """Model/file names arrive in requests and get joined into paths; keep
+    them to a plain filename so they can never climb out of the work dirs."""
+    name = str(name or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._ -]{0,99}", name) or ".." in name:
+        raise ValueError(f"bad name {name!r}")
+    return name
 
 
 def find_claude():
@@ -255,6 +271,8 @@ def save_import(name, data_b64):
     stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_") or "import"
     IMPORTS.mkdir(parents=True, exist_ok=True)
     path = IMPORTS / f"{stem}.stl"
+    (IMPORTS / f"{stem}.orient.json").unlink(missing_ok=True)
+    (IMPORTS / f"{stem}.json").unlink(missing_ok=True)
     if ext == ".stl":
         path.write_bytes(data)
         read_stl(path)   # validate now so a bad file fails at upload time
@@ -262,7 +280,8 @@ def save_import(name, data_b64):
         # GLB and friends (Tripo/Meshy web downloads, Sketchfab...) convert
         # through trimesh into one STL.
         import trimesh
-        tmp = OUTPUT / f"_convert{ext}"
+        import uuid
+        tmp = OUTPUT / f"_convert_{uuid.uuid4().hex[:8]}{ext}"
         OUTPUT.mkdir(exist_ok=True)
         tmp.write_bytes(data)
         scene = trimesh.load(str(tmp), force=None)
@@ -342,7 +361,7 @@ def finish_mesh_tris(tris, name, scale, scale_label, rot, warnings):
     }
 
 
-def auto_orient(name):
+def auto_orient(name, scale=1.0, rot=None):
     """Tweaker-3: find the orientation with the least support need and store
     it beside the import; generate_import applies it from then on. Calling
     again clears it (toggle)."""
@@ -352,7 +371,7 @@ def auto_orient(name):
     marker = IMPORTS / f"{name}.orient.json"
     if marker.is_file():
         marker.unlink()
-        result = generate(name, {})
+        result = generate(name, {}, scale, rot)
         result["model"] = name
         result["oriented"] = False
         return result
@@ -370,7 +389,7 @@ def auto_orient(name):
         "matrix": np.array(tw.matrix).tolist(),
         "unprintability": float(tw.unprintability),
     }))
-    result = generate(name, {})
+    result = generate(name, {}, scale, rot)
     result["model"] = name
     result["oriented"] = True
     result["unprintability"] = round(float(tw.unprintability), 2)
@@ -385,10 +404,13 @@ def generate_import(name, scale, scale_label, rot=None):
     if orient_marker.is_file():
         try:
             M = np.array(json.loads(orient_marker.read_text())["matrix"])
-            tris = tris @ M.T
+            # tweaker3's own FileHandler rotates row-vector meshes as
+            # mesh @ matrix - transposing it here would apply the inverse.
+            tris = tris @ M
             warnings.append("auto-oriented for least support")
         except Exception:
-            pass
+            warnings.append("auto-orient marker unreadable - shown UN-oriented "
+                            "(press auto-orient twice to redo)")
     return finish_mesh_tris(tris, name, scale, scale_label, rot, warnings)
 
 
@@ -447,7 +469,26 @@ if __name__ == "__main__":
 """
 
 
-SCALE_MENTION_RE = re.compile(r"\b1\s*[/:]\s*(\d{1,4})\b")
+# A hobby-scale mention ("1/64 scale hot wheels", "1:87"), NOT a fractional
+# dimension ("a 1/4 inch hole", "1/2 in slot"): require either an explicit
+# "scale" nearby or a denominator from the standard modeling-scale families,
+# and never treat a fraction followed by a unit word as a scale.
+_SCALE_DENOMS = {6, 8, 10, 12, 16, 18, 20, 24, 25, 32, 35, 43, 48, 64, 72, 76,
+                 87, 96, 100, 108, 120, 144, 160, 200, 220, 285, 350, 700}
+_SCALE_FRACTION_RE = re.compile(
+    r"\b1\s*[/:]\s*(\d{1,4})\b(?!\s*(?:\"|''|in\b|inch|inches\b|mm\b|cm\b|ft\b|foot\b|feet\b))",
+    re.I)
+
+
+class SCALE_MENTION_RE:      # keeps the .search(...) call-site shape
+    @staticmethod
+    def search(text):
+        for m in _SCALE_FRACTION_RE.finditer(text or ""):
+            denom = int(m.group(1))
+            near = text[max(0, m.start() - 30):m.end() + 30].lower()
+            if "scale" in near or denom in _SCALE_DENOMS:
+                return m
+        return None
 
 
 def support_analysis(stl_path):
@@ -644,10 +685,35 @@ def describe(mode, name, description, image=None, focus=None):
                     f"({lo[0]:.1f}, {lo[1]:.1f}, {lo[2]:.1f}) to "
                     f"({hi[0]:.1f}, {hi[1]:.1f}, {hi[2]:.1f}) mm.")
             if focus and focus.get("point"):
-                # The click is reported in bed-dropped coordinates; the raw
-                # mesh file the generated code loads keeps its original Z.
-                fx, fy, fz = (float(v) for v in focus["point"])
-                focus = dict(focus, point=[fx, fy, fz + float(lo[2])])
+                # The click happened on the DISPLAYED mesh (auto-orient, then
+                # user rotation, then scale, then bed-drop); the generated
+                # code loads the RAW mesh file, so invert the whole chain.
+                import numpy as np
+                p = np.array([float(v) for v in focus["point"]])
+                scale_f = float(focus.get("scale") or 1.0)
+                rot_f = focus.get("rot")
+                tris_t = tris.copy()
+                M = R = None
+                marker = IMPORTS / f"{name}.orient.json"
+                if marker.is_file():
+                    try:
+                        M = np.array(json.loads(marker.read_text())["matrix"])
+                        tris_t = tris_t @ M
+                    except Exception:
+                        M = None
+                if rot_f and any(rot_f):
+                    R = rotation_matrix(rot_f)
+                    tris_t = tris_t @ R.T
+                if scale_f != 1.0:
+                    tris_t = tris_t * scale_f
+                p[2] += float(tris_t[:, :, 2].min())    # undo the bed drop
+                if scale_f != 1.0:
+                    p = p / scale_f
+                if R is not None:
+                    p = p @ R
+                if M is not None:
+                    p = p @ M.T     # rotation matrices: transpose = inverse
+                focus = dict(focus, point=[round(float(v), 2) for v in p])
         else:
             original = path.read_text()
             task = (f"Modify this existing model per the request below. Keep the same "
@@ -701,6 +767,9 @@ def describe(mode, name, description, image=None, focus=None):
                 m = re.match(r"#\s*model:\s*([a-zA-Z0-9_]+)", code)
                 out_name = (m.group(1).lower() if m else slugify(description))[:40]
             path = MODELS / f"{out_name}.py"
+            if mode == "edit" and original is None and path.is_file():
+                # re-editing a mesh-mod: keep the working version restorable
+                original = path.read_text()
             if path.is_file():   # keep every overwritten version
                 hist = MODELS / ".history"
                 hist.mkdir(exist_ok=True)
@@ -1207,6 +1276,11 @@ def custom_material_meta():
 
 
 def do_slice(name, settings=None):
+    with _print_lock:
+        return _do_slice(name, settings)
+
+
+def _do_slice(name, settings=None):
     stl = OUTPUT / f"{name}.stl"
     if not stl.is_file():
         raise FileNotFoundError("generate the STL first")
@@ -1227,12 +1301,6 @@ def do_slice(name, settings=None):
     if override:
         args.append(str(override[0]))
         changed = override[1]
-    if custom:
-        changed.append(f"filament: {custom['name']} ({material.upper()} rules)")
-    elif material != "pla":
-        changed.append(material.upper())
-    if copies > 1:
-        changed.append(f"{copies} copies")
     extra_env = {"MATERIAL": material}
     if custom:
         extra_env["FILAMENT_OVERRIDE"] = str(CUSTOM_FILAMENT)
@@ -1257,6 +1325,12 @@ def do_slice(name, settings=None):
             supports_auto = True
             changed = [c for c in changed if c != "tree supports"]
             changed.append("tree supports AUTO-ENABLED (slicer found floating regions)")
+    if custom:
+        changed.append(f"filament: {custom['name']} ({material.upper()} rules)")
+    elif material != "pla":
+        changed.append(material.upper())
+    if copies > 1:
+        changed.append(f"{copies} copies")
     if code == 0:
         # The upload re-check must verify against the envelope this file was
         # sliced for, not assume PLA.
@@ -1270,16 +1344,27 @@ def do_slice(name, settings=None):
 
 
 def do_upload(name):
+    with _print_lock:
+        return _do_upload(name)
+
+
+def _do_upload(name):
     gcode = OUTPUT / f"{name}.gcode"
     if not gcode.is_file():
         raise FileNotFoundError("slice first")
     # Independent re-check so a stale or unsafe file can never be uploaded,
     # even if the UI is out of sync with what's on disk. The material marker
-    # written at slice time selects the temperature envelope.
+    # written at slice time selects the temperature envelope; without it we
+    # refuse rather than guess an envelope the file was not sliced for.
     marker = OUTPUT / f"{name}.material"
-    material = marker.read_text().strip() if marker.is_file() else "pla"
+    if not marker.is_file():
+        return {"ok": False, "report": "REFUSED - no material marker for this "
+                "G-code; slice it here first so the upload check knows which "
+                "temperature envelope applies"}
+    material = marker.read_text().strip()
     if material not in MATERIALS:
-        material = "pla"
+        return {"ok": False, "report": f"REFUSED - unknown material "
+                f"'{material}' in the marker; re-slice to refresh it"}
     code, out = run_script([sys.executable, str(REPO / "scripts/check-gcode.py"),
                             "--material", material, str(gcode)])
     if code != 0:
@@ -1630,9 +1715,9 @@ def gen3d(image_b64=None, image_name=None, prompt=None):
     if not url:
         raise RuntimeError("provider returned no model url")
     raw = http_download(url)
-    tmp = OUTPUT / "_gen3d_download"
+    import uuid
     suffix = ".glb" if ".glb" in url.split("?")[0] else ".stl"
-    tmp_file = tmp.with_suffix(suffix)
+    tmp_file = OUTPUT / f"_gen3d_{uuid.uuid4().hex[:8]}{suffix}"
     tmp_file.write_bytes(raw)
     if suffix == ".glb":   # convert to STL via trimesh
         import trimesh
@@ -1813,7 +1898,8 @@ def multiview(views, name=None):
     suffix = ".glb" if ".glb" in url.split("?")[0] else ".stl"
     if suffix == ".glb":
         import trimesh
-        tmp_file = (OUTPUT / "_mv_download").with_suffix(".glb")
+        import uuid
+        tmp_file = OUTPUT / f"_mv_{uuid.uuid4().hex[:8]}.glb"
         tmp_file.write_bytes(raw)
         scene = trimesh.load(str(tmp_file))
         mesh = scene.dump(concatenate=True) if isinstance(scene, trimesh.Scene) else scene
@@ -1948,7 +2034,8 @@ class Handler(BaseHTTPRequestHandler):
         if route == "/api/models":
             return self._send(200, list_models())
         if route == "/api/busy":
-            running = [j for j in _jobs.values() if j["status"] == "running"]
+            running = [j for j in list(_jobs.values())
+                       if j["status"] == "running"]
             return self._send(200, {"running": len(running)})
         if route.startswith("/api/job/"):
             jid = route.rsplit("/", 1)[-1]
@@ -1974,9 +2061,24 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        n = int(self.headers.get("Content-Length") or 0)
+        # Same-origin only: a drive-by web page in a local browser can POST
+        # to 127.0.0.1 cross-site; the browser always attaches Origin there.
+        origin = self.headers.get("Origin")
+        if origin:
+            o_host = urllib.parse.urlparse(origin).hostname
+            if o_host not in ("127.0.0.1", "localhost", "::1"):
+                return self._send(403, {"error": "cross-origin request refused"})
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+        if host not in ("127.0.0.1", "localhost", "[::1]", ""):
+            return self._send(403, {"error": "unexpected Host"})
         try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 80 * 1024 * 1024:
+                return self._send(413, {"error": "request too large"})
             req = json.loads(self.rfile.read(n) or b"{}")
+            for k in ("model", "name"):
+                if k in req:
+                    req[k] = safe_name(req[k])
             if self.path == "/api/generate":
                 return self._send(200, generate(req["model"], req.get("params"),
                                                 req.get("scale", 1.0),
@@ -2014,7 +2116,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, start_job(
                     refine, req["model"], req.get("notes")))
             if self.path == "/api/auto_orient":
-                return self._send(200, start_job(auto_orient, req["model"]))
+                return self._send(200, start_job(
+                    auto_orient, req["model"],
+                    float(req.get("scale") or 1.0), req.get("rot")))
             if self.path == "/api/make_printable":
                 return self._send(200, start_job(
                     make_printable, req["model"],

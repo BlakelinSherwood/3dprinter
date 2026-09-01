@@ -32,17 +32,44 @@ MATERIALS = {
 
 
 def motion_extents(lines):
-    """Track the toolhead position across G0/G1 moves, carrying unchanged axes."""
+    """Track the toolhead across G0/G1/G2/G3 moves, honoring absolute vs
+    relative positioning (G90/G91), G92 resets, and G28 homing. Arc moves
+    contribute their endpoints (this pipeline slices with arc fitting off).
+    Relative moves accumulate onto the current position - an end-gcode
+    "G91 / G1 Z10" near the ceiling counts as real travel."""
     pos = {"X": None, "Y": None, "Z": None}
     seen = {"X": [], "Y": [], "Z": []}
+    absolute = True
     for line in lines:
-        if not line.startswith(("G0 ", "G1 ")):
+        code = line.split(";", 1)[0].strip()
+        if not code:
             continue
-        code = line.split(";", 1)[0]
+        cmd = code.split(None, 1)[0].upper()
+        if cmd == "G90":
+            absolute = True
+            continue
+        if cmd == "G91":
+            absolute = False
+            continue
+        if cmd == "G28":
+            axes = [a for a in "XYZ" if a in code.upper()] or list("XYZ")
+            for ax in axes:
+                pos[ax] = 0.0
+                seen[ax].append(0.0)
+            continue
+        if cmd == "G92":
+            for ax, rx in AXIS_RE.items():
+                m = rx.search(code)
+                if m:
+                    pos[ax] = float(m.group(1))
+            continue
+        if cmd not in ("G0", "G1", "G2", "G3"):
+            continue
         for ax, rx in AXIS_RE.items():
             m = rx.search(code)
             if m:
-                pos[ax] = float(m.group(1))
+                v = float(m.group(1))
+                pos[ax] = v if (absolute or pos[ax] is None) else pos[ax] + v
         for ax in "XYZ":
             if pos[ax] is not None:
                 seen[ax].append(pos[ax])
