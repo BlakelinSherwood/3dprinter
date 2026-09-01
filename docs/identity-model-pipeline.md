@@ -35,14 +35,19 @@ The unlock for subjects nobody has modeled:
 make printable (Blender) -> scale -> split/pegs at the MEASURED clearances
 (0.4 press / 0.5 drag / 0.6 spin) -> slice -> gate -> ask Blake -> print.
 
-## Build queue
-1. Sketchfab provider in the finder: keyless search cards now; downloads
-   when SKETCHFAB_API_TOKEN (free account) lands in ~/.zshrc.
-2. Blueprint helper: paste a blueprint-sheet URL, auto-crop into 4 views
-   sized for multiview input.
-3. Multiview call in the Tripo integration (endpoint already known:
-   POST /v3/generation/multiview-to-model) - lights up if credits appear;
-   until then the web studio does it free with a manual download.
+## Build queue — ALL BUILT (overnight, Aug 31 2026)
+1. ✅ Sketchfab in the finder: searches merge with Printables (source
+   badges, license, face counts); one-click import lights up when
+   SKETCHFAB_API_TOKEN (free account) lands in ~/.zshrc, and cards
+   explain the manual .glb route until then. Sketchfab page URLs also
+   work in the import-by-URL box.
+2. ✅ Blueprint helper: the ⌗ blueprint button splits an uploaded sheet
+   into its views (gutter detection, dark-on-light and white-on-blue),
+   each with an editable front/left/right/back/top label.
+3. ✅ Multiview call (POST /v3/generation/multiview-to-model): Build 3D
+   sends the labeled views; verified to the billing gate — lights up if
+   credits appear; until then the Tripo web studio does it free with a
+   manual GLB download into the ⊕ mesh button.
 
 Sources: scenario.com Tripo 3.x multiview guides; the-blueprints.com;
 carblueprints.info; drawingdatabase.com; api.sketchfab.com/v3/search.

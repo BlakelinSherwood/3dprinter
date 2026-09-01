@@ -1,51 +1,43 @@
 # Handoff prompt for a local Claude Code session
 
 Run `claude` inside `~/3dprinter` on the Mac, then paste the prompt below.
-(Approve the project's `.mcp.json` MCP server when it asks; `/mcp` verifies it.)
+(Approve the project's `.mcp.json` MCP server if it asks; `/mcp` verifies it.)
 
 ---
 
-I'm setting up a pipeline so you can generate 3D-printable parts, slice them,
-and queue them on my printer. Work on my Mac, in this repo (~/3dprinter), which
-already contains the setup kit: setup-mac.sh, Ender 3 V2 OrcaSlicer profiles in
-profiles/ender3v2/, a test cube in test-parts/, helper scripts in scripts/, and
-.mcp.json wiring the mcp-3d-printer-server MCP server to OctoPrint.
+You're picking up a working 3D-printing pipeline. Read the repo README first —
+it describes the system as-built. The short version:
 
-Hardware/software state:
-- Ender 3 V2, connected to this Mac over USB. Bed 220x220x250mm, PLA, 0.4 nozzle.
-- OrcaSlicer 2.4.2 installed at /Applications/OrcaSlicer.app.
-- Node/npx available.
-- OctoPrint is intended to run from ~/octoprint-venv on port 5001, but the
-  install FAILED: the venv was created with Python 3.14, which OctoPrint doesn't
-  support, so pip fell back to OctoPrint 1.8.7 and died building PyYAML 5.4.1
-  ("'build_ext' object has no attribute 'cython_sources'"). The venv has no
-  octoprint binary. README's "Installing OctoPrint itself (macOS)" section has
-  the Python 3.13 fix.
+Hardware/software state (as of Sep 2026):
+- Ender 3 V2 (BLTouch, Creality 4.2.2 board), 220x220x250mm, 0.4 nozzle.
+- OctoPrint runs on a Raspberry Pi 3B+ (OctoPi) at 10.0.0.112, port 80.
+  The printer's USB goes to the Pi, NOT the Mac.
+- The Mac reaches the Pi through a localhost relay: `OCTO_URL` is
+  `http://127.0.0.1:5051`, forwarded to `10.0.0.112:80`. This exists because
+  macOS Local Network privacy (TCC) blocks direct LAN requests from some
+  process trees (errno 65). If port 5051 is dead, restart the relay:
+  see docs/raspberry-pi-migration.md "As-built".
+- `OCTOPRINT_API_KEY` (the Pi's Application Key), `OCTO_URL`, and optional
+  `TRIPO_API_KEY` / `SKETCHFAB_API_TOKEN` live in ~/.zshrc.
+- OrcaSlicer 2.4.2 at /Applications/OrcaSlicer.app; profiles in
+  profiles/ender3v2/ (machine + process + PLA/PETG/TPU filaments).
+- Part Studio (the visual editor, primary UI): `scripts/studio.sh` serves
+  http://127.0.0.1:8434 from the CAD venv (.venv-cad, Python 3.13).
 
-Please:
-1. Rebuild the OctoPrint venv on Python 3.13 and install OctoPrint (should get
-   1.10+, not 1.8.7). Start it on port 5001 in the background and confirm it
-   responds. Tell me when to do the first-run wizard in the browser and when to
-   generate an Application Key (Settings > Application Keys) — I'll paste the key
-   back to you and add it to ~/.zshrc as OCTOPRINT_API_KEY.
-2. Run ./setup-mac.sh and drive every step to [ok], fixing what fails. This
-   test-slices test-parts/calibration_cube_20mm.stl and uploads the G-code to
-   OctoPrint.
-3. Verify the MCP server works end-to-end: get_printer_status, then slice and
-   upload the cube through the MCP tools rather than the shell scripts, so we
-   know the path I'll actually use in future conversations is real.
-4. Help me connect the printer in OctoPrint's Connection panel (serial port,
-   baud) and confirm you can read live temperatures.
-5. Commit and push any fixes you make to the repo, so the setup stays
-   reproducible.
-
-Safety rules, permanent:
-- NEVER start a physical print without asking me first and getting a yes.
+SAFETY RULES (non-negotiable, from Blake):
+- NEVER start a physical print without asking Blake first and getting a yes.
 - Uploads must use select=false / print=false.
-- Sanity-check generated G-code before any print: PLA nozzle 190-230C, bed <=70C,
-  and geometry within the 220x220x250mm build volume.
-- I need to be physically present for a first-layer check before anything prints.
+- Sanity-check G-code before any print: scripts/check-gcode.py enforces
+  temperature envelopes (PLA 190-230/70, PETG 220-260/90, TPU 195-245/60)
+  and the 220x220x250 volume. Slicing through the studio or
+  scripts/test-slice.sh runs it automatically; uploads re-check.
+- Blake must be physically present for a first-layer check before anything
+  prints.
 
-Once this works, the workflow I want in future sessions is: I describe a part,
-you generate the STL, slice it with the Ender 3 V2 profiles, upload it, and ask
-me before printing.
+Useful entry points:
+- Slice + safety-check an STL: `scripts/test-slice.sh <stl> <name>`
+  (MATERIAL=pla|petg|tpu, REPETITIONS=N for copies).
+- Upload checked G-code (never prints): `scripts/octoprint-upload.sh <gcode>`.
+- Printer status: `curl -s -H "X-Api-Key: $OCTOPRINT_API_KEY" $OCTO_URL/api/printer`.
+- CadQuery models live in models/ (see models/_meshlib.py for mesh-mod
+  helpers and the measured clearances: 0.4 press / 0.5 drag / 0.6 free).

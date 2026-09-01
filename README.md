@@ -1,14 +1,28 @@
 # 3D Printer Pipeline — Ender 3 V2 + OctoPrint + OrcaSlicer + Claude
 
 A pipeline so Claude can take "make me a part," generate an STL, slice it for an
-Ender 3 V2 (220×220×250mm, PLA), and queue it on OctoPrint — with printing always
+Ender 3 V2 (220×220×250mm), and queue it on OctoPrint — with printing always
 gated on your explicit go-ahead.
 
+## Live architecture (as-built, Sep 2026)
+
 ```
-Claude (local session on the Mac)
-  └─ generates STL ──► OrcaSlicer CLI (slice) ──► OctoPrint REST API (upload/queue)
-        via mcp-3d-printer-server (MCP), configured in .mcp.json
+Part Studio web UI (scripts/studio.sh → http://127.0.0.1:8434, .venv-cad py3.13)
+  └─ describe/photo/blueprint/find/import ─► CadQuery / mesh pipeline ─► STL
+       └─ OrcaSlicer 2.4.2 CLI (slice) ─► scripts/check-gcode.py (safety gate)
+            └─ OCTO_URL http://127.0.0.1:5051 (localhost relay)
+                 └─► OctoPrint on a Raspberry Pi 3B+ (OctoPi, 10.0.0.112:80)
+                      └─► Ender 3 V2 over the Pi's USB
 ```
+
+- **OctoPrint lives on the Pi**, not the Mac; the Mac reaches it through a
+  localhost relay because macOS Local Network privacy silently blocks LAN
+  requests from many process trees (details in
+  [docs/raspberry-pi-migration.md](docs/raspberry-pi-migration.md), "As-built").
+- The MCP server route (`.mcp.json`, mcp-3d-printer-server) still works as a
+  secondary interface for a Claude session in this repo.
+- The sections below on installing OctoPrint on the Mac are kept for the
+  **fallback** local instance (127.0.0.1:5001) and for history.
 
 ## Installing OctoPrint itself (macOS)
 
@@ -137,13 +151,44 @@ overhangs under about 45°.
 
 ## Part Studio (visual model editor)
 
-A local web UI over the same pipeline: pick a model, adjust its parameters,
-see the part in 3D on a 220×220 build plate, then slice and upload without
-leaving the browser.
+A local web UI over the same pipeline, organized as three stages —
+**1 Create → 2 Shape → 3 Print** — with per-stage status chips, imperial-first
+display (📏 toggles mm), and a movable pop-out panel.
 
 ```bash
 scripts/studio.sh          # serves http://127.0.0.1:8434
 ```
+
+Added since the sections below were written (they remain accurate):
+
+- **Three-stage flow**: Create (describe it / 📷 photo / ⌗ blueprint / ⊕ mesh
+  import / 🔍 find), Shape (parameters, scale, rotate, 🧭 auto-orient,
+  ⚙ make printable), Print (quality presets Draft/Standard/Fine + options,
+  slice+check, send to printer). Stages invalidate downstream state and say
+  why ("shape changed — slice again").
+- **🧭 auto-orient** (imports): Tweaker-3 finds the minimum-support
+  orientation; press again to undo. Persisted per-import, composed before
+  user rotation and scale.
+- **🔍 find** searches **Printables and Sketchfab together** (source badge,
+  license, face counts). Sketchfab one-click import needs a free
+  `SKETCHFAB_API_TOKEN` in ~/.zshrc; cards explain the manual GLB route
+  until then. Sketchfab page URLs work in the paste-a-URL row too.
+- **⌗ blueprint**: upload a multi-view blueprint sheet; the gutters between
+  drawings are detected and each view cropped and labeled
+  (front/left/right/back/top, editable). "Build 3D" sends up to four labeled
+  views through Tripo multiview-to-model (needs `TRIPO_API_KEY` credits;
+  the free path is Tripo's web studio + GLB import).
+- **🔬 toolpath view**: after slicing, the actual G-code renders as colored
+  extrusion segments (walls/infill/supports…) with a layer slider — and
+  while that same file is printing, a **LIVE** mode follows the printer's
+  byte position (layer, %, time left) via the `/api/printjob` poll.
+- **Print options**: layer height ↔ quality preset sync, infill %, pattern
+  (grid/lightning/gyroid/adaptive), smooth vs textured (fuzzy skin) finish,
+  supports, brim, copies (`--clone-objects`), material PLA/PETG/TPU, and
+  **type-a-filament-name lookup** that pins its temps as a custom material.
+- **Safety in the UI**: the footer states it plainly — uploads never select
+  or start a print; printing happens only via Claude with explicit approval
+  after a first-layer check.
 
 - **&#128270; find** opens the model finder: search Printables (largest open
   model library; anonymous API) with thumbnails, author, license and download
@@ -250,9 +295,17 @@ that's the plain G-code OctoPrint wants.
 ## Safety rules
 
 - Uploads always use `select=false&print=false` — nothing prints on upload.
-- Claude must ask before calling `start_print`, ever.
-- `confirm_temperatures` (MCP tool) should be run on generated G-code before any
-  print: PLA sanity range is nozzle 190–230°C, bed ≤ 70°C.
+- Claude must ask before starting any print, ever, and Blake is physically
+  present for a first-layer check before anything prints.
+- Every slice runs `scripts/check-gcode.py`: temperature envelopes per
+  material (PLA nozzle 190–230°C bed ≤70, PETG 220–260/90, TPU 195–245/60)
+  and 220×220×250mm volume containment, with G90/G91/G92/G28 modal state
+  tracked so relative moves count as real travel. G-code only lands at its
+  final `output/<name>.gcode` path after the check passes, a `.material`
+  marker records which envelope it was sliced for, and uploads re-check
+  against that marker (missing/unknown marker → upload refused).
+- Slice and upload serialize on one lock so an upload can never send bytes
+  a concurrent slice wrote after the check.
 - Never print unattended until the profile has proven itself on a few parts.
 
 ## Moving to a Raspberry Pi (OctoPi)

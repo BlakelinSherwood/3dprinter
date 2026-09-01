@@ -40,3 +40,33 @@ just points at a different host.
   URLs) visual print monitoring.
 - OctoPrint plugins worth adding: Bed Level Visualizer, PrintTimeGenius,
   Obico or OctoEverywhere if you ever want sanctioned remote access.
+
+## As-built (August 2026) — what the live system actually does
+
+The migration happened; this is the part the sections above don't tell you:
+
+- OctoPrint runs on a Pi 3B+ (OctoPi 1.10) at **10.0.0.112:80** (DHCP
+  reservation recommended). The printer's USB goes to the Pi.
+- **The Mac does not talk to the Pi directly.** macOS Local Network privacy
+  (TCC) silently blocks LAN requests (errno 65) from process trees that were
+  never granted Local Network permission — including preview-launched dev
+  servers, and raw-IP requests are blocked the same as .local names. Python
+  also prefers an IPv6 route the Pi doesn't serve.
+- The fix is a tiny localhost relay: `OCTO_URL="http://127.0.0.1:5051"`,
+  forwarded to `10.0.0.112:80` by a socat-style forwarder started from a
+  context that HAS Local Network permission (a normal Terminal shell works):
+
+  ```bash
+  # keep-alive relay loop, run from an allowed context:
+  while true; do
+    /usr/bin/nc -l 127.0.0.1 5051 -c "/usr/bin/nc 10.0.0.112 80" 2>/dev/null || true
+  done
+  # (the actual relay in use is a python stream forwarder started the same way)
+  ```
+
+- `scripts/studio.sh` force-sources `OCTOPRINT_API_KEY`, `OCTO_URL`,
+  `TRIPO_API_KEY`, and `SKETCHFAB_API_TOKEN` from ~/.zshrc so the studio
+  works no matter how it was launched.
+- The old Mac OctoPrint on 127.0.0.1:5001 still exists as a fallback and is
+  the default `OCTO_URL` when the env var is unset — with the env var set
+  (normal state), everything targets the Pi through the relay.
