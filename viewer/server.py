@@ -1655,6 +1655,180 @@ def gen3d(image_b64=None, image_name=None, prompt=None):
     return result
 
 
+# ------------- blueprint sheets -> orthographic view crops -------------
+
+def _bp_bands(frac, size, thresh=0.0022):
+    """Split one axis at gutters: runs of near-empty scanlines. Returns
+    (start, end) content bands."""
+    min_run = max(6, int(size * 0.012))
+    bands, start, empty_run = [], None, 0
+    for i, f in enumerate(frac):
+        if f < thresh:
+            if start is not None:
+                empty_run += 1
+                if empty_run >= min_run:
+                    bands.append((start, i - empty_run + 1))
+                    start = None
+        else:
+            if start is None:
+                start = i
+            empty_run = 0
+    if start is not None:
+        bands.append((start, len(frac)))
+    return bands
+
+
+def blueprint_split(image_b64):
+    """Cut a multi-view blueprint sheet into its orthographic views by
+    finding the empty gutters between drawings. Works for dark-on-light and
+    classic white-on-blue sheets alike (ink = distance from corner color)."""
+    from PIL import Image
+    import io as _io
+    import numpy as np
+    im = Image.open(_io.BytesIO(base64.b64decode(image_b64)))
+    im.load()
+    full = im.convert("RGB")
+    g = full.convert("L")
+    scale = 1.0
+    if g.width > 1600:
+        scale = 1600 / g.width
+        g = g.resize((1600, max(1, int(g.height * scale))))
+    px = np.asarray(g, dtype=np.int16)
+    h, w = px.shape
+    c = 12
+    bg = int(np.median(np.concatenate([
+        px[:c, :c].ravel(), px[:c, -c:].ravel(),
+        px[-c:, :c].ravel(), px[-c:, -c:].ravel()])))
+    ink = np.abs(px - bg) > 30
+    views = []
+    for y0, y1 in _bp_bands(ink.mean(axis=1), h):
+        for x0, x1 in _bp_bands(ink[y0:y1].mean(axis=0), w):
+            bw, bh = x1 - x0, y1 - y0
+            if bw * bh < 0.015 * w * h or bw < 40 or bh < 40:
+                continue    # specks, title blocks, dimension text
+            pad = int(0.015 * max(w, h))
+            box = (max(0, x0 - pad), max(0, y0 - pad),
+                   min(w, x1 + pad), min(h, y1 + pad))
+            views.append(box)
+    views.sort(key=lambda b: (b[2] - b[0]) * (b[3] - b[1]), reverse=True)
+    views = views[:8]
+    out = []
+    labels_left = ["front", "back", "top"]
+    for i, (x0, y0, x1, y1) in enumerate(views):
+        fx0, fy0, fx1, fy1 = (int(v / scale) for v in (x0, y0, x1, y1))
+        crop = full.crop((fx0, fy0, fx1, fy1))
+        if crop.width > 1024:
+            crop = crop.resize((1024, max(1, int(crop.height * 1024 / crop.width))))
+        buf = _io.BytesIO()
+        crop.save(buf, "PNG")
+        aspect = (x1 - x0) / max(1, y1 - y0)
+        if i == 0 and aspect > 1.6:
+            label = "left"          # longest drawing on a vehicle sheet: side profile
+        elif labels_left:
+            label = labels_left.pop(0)
+        else:
+            label = "ignore"
+        out.append({"image": base64.b64encode(buf.getvalue()).decode(),
+                    "label": label, "box": [fx0, fy0, fx1, fy1]})
+    if not out:
+        raise ValueError("no separate views found - this looks like a single "
+                         "drawing (use it as a photo instead)")
+    return {"views": out}
+
+
+def _tripo(key, url, payload=None, headers=None, raw=None):
+    JH = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    req = urllib.request.Request(
+        url, data=raw or (json.dumps(payload).encode() if payload else None),
+        headers=headers or JH)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            d = json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")[:400]
+        raise RuntimeError(f"Tripo HTTP {e.code}: {body}")
+    if d.get("code") != 0:
+        raise RuntimeError(f"Tripo: {d.get('message')} - {d.get('suggestion', '')}")
+    return d["data"]
+
+
+def _tripo_upload(key, image_b64, fname="view.png"):
+    img = base64.b64decode(image_b64)
+    boundary = "----partstudio" + str(int(time.time() * 1000))
+    body = (f"--{boundary}\r\nContent-Disposition: form-data; "
+            f'name="file"; filename="{fname}"\r\n'
+            f"Content-Type: application/octet-stream\r\n\r\n").encode() \
+        + img + f"\r\n--{boundary}--\r\n".encode()
+    up = _tripo(key, "https://openapi.tripo3d.ai/v3/files", raw=body,
+                headers={"Authorization": f"Bearer {key}",
+                         "Content-Type": f"multipart/form-data; boundary={boundary}"})
+    return up.get("file_token") or up.get("token") or up.get("id")
+
+
+def multiview(views, name=None):
+    """Blueprint views -> one mesh. Tripo's multiview-to-model wants files
+    in [front, left, back, right] order; front is required."""
+    key = os.environ.get("TRIPO_API_KEY")
+    if not key:
+        raise RuntimeError("multiview generation needs TRIPO_API_KEY in ~/.zshrc")
+    slots = {}
+    for v in views or []:
+        lab = (v.get("label") or "").lower()
+        if lab in ("front", "left", "back", "right") and lab not in slots:
+            slots[lab] = v["image"]
+    if "front" not in slots:
+        raise ValueError("label one view 'front' - Tripo requires it "
+                         "(side profiles are 'left' or 'right')")
+    API = "https://openapi.tripo3d.ai/v3"
+    files = []
+    for lab in ("front", "left", "back", "right"):
+        if lab in slots:
+            files.append({"type": "png",
+                          "file_token": _tripo_upload(key, slots[lab], f"{lab}.png")})
+        else:
+            files.append({})
+    task = _tripo(key, f"{API}/generation/multiview-to-model",
+                  {"model": os.environ.get("TRIPO_MODEL", "v3.0-20250812"),
+                   "files": files})["task_id"]
+    waited = 0
+    while True:
+        d = _tripo(key, f"{API}/tasks/{task}")
+        if d.get("status") == "success":
+            break
+        if d.get("status") in ("failed", "cancelled"):
+            raise RuntimeError(f"Tripo task {d.get('status')}: {json.dumps(d)[:300]}")
+        time.sleep(6)
+        waited += 6
+        if waited > 900:
+            raise RuntimeError("Tripo generation timed out after 15 minutes")
+    out = d.get("output") or {}
+    url = (out.get("pbr_model") or out.get("model") or out.get("base_model")
+           or next((v for v in out.values()
+                    if isinstance(v, str) and v.startswith("http")), None))
+    if not url:
+        raise RuntimeError("Tripo returned no model url")
+    raw = http_download(url)
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", name or "blueprint_model").strip("_")[:30] \
+        or "blueprint_model"
+    suffix = ".glb" if ".glb" in url.split("?")[0] else ".stl"
+    if suffix == ".glb":
+        import trimesh
+        tmp_file = (OUTPUT / "_mv_download").with_suffix(".glb")
+        tmp_file.write_bytes(raw)
+        scene = trimesh.load(str(tmp_file))
+        mesh = scene.dump(concatenate=True) if isinstance(scene, trimesh.Scene) else scene
+        IMPORTS.mkdir(parents=True, exist_ok=True)
+        mesh.export(str(IMPORTS / f"{stem}.stl"))
+    else:
+        stem = save_import(stem + ".stl", base64.b64encode(raw).decode())
+    (IMPORTS / f"{stem}.json").write_text(json.dumps(
+        {"title": name or "blueprint model", "source": "AI generated (Tripo multiview)",
+         "license": "check provider terms"}, indent=2))
+    result = generate(stem, {})
+    result["model"] = stem
+    return result
+
+
 OCTO_URL = os.environ.get("OCTO_URL", "http://127.0.0.1:5001")
 
 
@@ -1827,6 +2001,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, import_remote(mid, req["file_id"]))
             if self.path == "/api/import_url":
                 return self._send(200, import_url(req.get("url")))
+            if self.path == "/api/blueprint_split":
+                return self._send(200, blueprint_split(req["image"]))
+            if self.path == "/api/multiview":
+                return self._send(200, start_job(
+                    multiview, req.get("views"), req.get("name")))
             if self.path == "/api/material_lookup":
                 return self._send(200, material_lookup(req.get("query")))
             if self.path == "/api/files/delete":

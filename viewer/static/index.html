@@ -149,7 +149,22 @@
   .qrow button:hover { color: var(--bad); border-color: var(--bad); }
   .qrow button.armed { flex-basis: auto; padding: 1px 8px; color: #fff;
     background: var(--bad); border-color: var(--bad); font-size: 11px; }
-  #finder[hidden] { display: none; }
+  #finder[hidden], #bp[hidden] { display: none; }
+  #bp { position: fixed; z-index: 21; right: 18px; top: 18px; width: 430px;
+    max-height: calc(100vh - 36px); display: flex; flex-direction: column;
+    background: rgba(28, 31, 38, .95); backdrop-filter: blur(10px);
+    border: 1px solid var(--edge); border-radius: 12px;
+    box-shadow: 0 14px 44px rgba(0,0,0,.55); }
+  #bpviews { overflow-y: auto; padding: 10px 14px; flex: 1; min-height: 60px;
+    display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .bpv { border: 1px solid var(--edge); border-radius: 8px; padding: 6px;
+    display: flex; flex-direction: column; gap: 6px; }
+  .bpv img { width: 100%; height: 92px; object-fit: contain;
+    background: var(--bg); border-radius: 5px; }
+  .bpv select { padding: 4px 6px; font-size: 12px; }
+  .bpv.off { opacity: .4; }
+  #bpfoot { padding: 10px 14px; border-top: 1px solid var(--edge); }
+  #bphint { color: var(--dim); font-size: 11px; padding: 0 14px 10px; }
   #finder {
     position: fixed; z-index: 20; right: 18px; top: 18px; width: 400px;
     max-height: calc(100vh - 36px); display: flex; flex-direction: column;
@@ -252,9 +267,11 @@
             <input type="file" id="photo" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
             <span id="photoname">no photo</span>
             <button id="clearphoto" hidden title="Remove photo">&times;</button>
+            <button id="bpbtn" title="Split a blueprint sheet into views, then build a 3D model from them">&#8980; blueprint</button>
             <button id="importbtn" title="Import a mesh file: STL, GLB, OBJ, PLY, 3MF">&#8853; mesh</button>
             <button id="findbtn" title="Search public model libraries">&#128270; find</button>
             <input type="file" id="importfile" accept=".stl,.glb,.gltf,.obj,.ply,.3mf" hidden>
+            <input type="file" id="bpfile" accept="image/png,image/jpeg,image/webp" hidden>
           </div>
           <div class="row" id="focusrow" hidden>
             <span id="focusdot">&#9678;</span>
@@ -411,6 +428,22 @@
     </details>
     <footer>Uploads never select or start a print. Printing happens only via
     Claude, with explicit approval, after a first-layer check.</footer>
+  </div>
+  <div id="bp" hidden>
+    <div id="finderhead">
+      <b>Blueprint views</b>
+      <span class="sub">label each view &middot; front is required</span>
+      <button id="bpclose" title="Close">&times;</button>
+    </div>
+    <div id="bpviews"></div>
+    <div id="bphint">Tripo builds one mesh from up to four labeled views
+      (front / left / back / right). &ldquo;top&rdquo; and &ldquo;ignore&rdquo;
+      views are skipped.</div>
+    <div class="row" id="bpfoot">
+      <input type="text" id="bpname" placeholder="name it, e.g. M4 Sherman&hellip;"
+        spellcheck="false" style="flex:1;padding:7px 9px;background:var(--bg);color:var(--text);border:1px solid var(--edge);border-radius:6px;font:inherit">
+      <button id="bpgo" class="primary" style="flex:0 0 110px">Build 3D</button>
+    </div>
   </div>
   <div id="finder" hidden>
     <div id="finderhead">

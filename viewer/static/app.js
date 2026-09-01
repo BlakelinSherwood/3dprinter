@@ -955,6 +955,81 @@ $('aifile').onchange = () => {
   };
   rd.readAsDataURL(f);
 };
+// ------------------- blueprint sheet -> views -> 3D -------------------
+let bpViews = [];
+$('bpbtn').onclick = () => $('bpfile').click();
+$('bpclose').onclick = () => { $('bp').hidden = true; };
+
+$('bpfile').onchange = () => {
+  const f = $('bpfile').files[0];
+  if (!f) return;
+  const rd = new FileReader();
+  rd.onload = async () => {
+    $('bpfile').value = '';
+    setBusy(true);
+    startProgress('blueprint', `splitting ${f.name} into views`, 8);
+    let ok = false;
+    try {
+      const res = await api('/api/blueprint_split',
+        { image: rd.result.split(',')[1] });
+      ok = true;
+      bpViews = res.views;
+      renderBpViews();
+      $('bpname').value = '';
+      $('bp').hidden = false;
+      stageMsg(1, `found ${res.views.length} views — check the labels, then Build 3D`, 'ok');
+    } catch (e) { log(e.message, 'bad'); }
+    endProgress(ok);
+    setBusy(false);
+  };
+  rd.readAsDataURL(f);
+};
+
+function renderBpViews() {
+  const box = $('bpviews');
+  box.innerHTML = '';
+  bpViews.forEach((v, i) => {
+    const card = document.createElement('div');
+    card.className = 'bpv' + (v.label === 'ignore' || v.label === 'top' ? ' off' : '');
+    const img = document.createElement('img');
+    img.src = 'data:image/png;base64,' + v.image;
+    const sel = document.createElement('select');
+    for (const lab of ['front', 'left', 'right', 'back', 'top', 'ignore']) {
+      const o = document.createElement('option');
+      o.value = lab; o.textContent = lab; sel.appendChild(o);
+    }
+    sel.value = v.label;
+    sel.onchange = () => { bpViews[i].label = sel.value; renderBpViews(); };
+    card.append(img, sel);
+    box.appendChild(card);
+  });
+}
+
+$('bpgo').onclick = async () => {
+  const views = bpViews.filter(v => v.label !== 'ignore' && v.label !== 'top')
+    .map(v => ({ image: v.image, label: v.label }));
+  if (!views.some(v => v.label === 'front')) {
+    log("label one view 'front' first — Tripo requires it", 'bad'); return;
+  }
+  const name = $('bpname').value.trim() || 'blueprint model';
+  setBusy(true);
+  log(`building 3D from ${views.length} blueprint views…`, 'dim');
+  startProgress('gen3d', 'multiview 3D generation (provider side)', 240);
+  let ok = false;
+  try {
+    const res = await apiJob('/api/multiview', { views, name }, 'gen3d');
+    ok = true;
+    $('bp').hidden = true;
+    await refreshModels(res.model);
+    showResult(res);
+    state.generated = true;
+    invalidateSlice('new model');
+    log(`${res.model} built from blueprint views — try ⚙ make printable next`, 'ok');
+  } catch (e) { log(e.message, 'bad'); }
+  endProgress(ok);
+  setBusy(false);
+};
+
 $('aigo').onclick = async () => {
   const prompt = $('aiprompt').value.trim();
   if (!aiphotoData && !prompt) { log('pick a photo or type a description for AI 3D', 'bad'); return; }
