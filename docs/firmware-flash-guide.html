@@ -1,0 +1,216 @@
+<title>Firmware Flash Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --bg: #f1efe9; --surface: #fbfaf7; --sunk: #e9e6df;
+    --ink: #23272c; --dim: #63696f; --edge: #d8d4ca;
+    --accent: #2f5d7c; --accent-ink: #fff;
+    --danger: #b0271d; --danger-bg: #f7e6e3; --danger-edge: #e3b4ad;
+    --warn: #9a6200; --warn-bg: #f6eddb; --warn-edge: #e2cfa4;
+    --ok: #2f7d4f; --ok-bg: #e4f0e7; --ok-edge: #b3d4be;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171b; --surface: #1c2026; --sunk: #101317;
+      --ink: #e7e9ec; --dim: #98a0a8; --edge: #2b3038;
+      --accent: #63a4d4; --accent-ink: #0c1116;
+      --danger: #ff6f64; --danger-bg: #2c1613; --danger-edge: #5a2a24;
+      --warn: #ffb638; --warn-bg: #2a2213; --warn-edge: #574526;
+      --ok: #55c98d; --ok-bg: #14251c; --ok-edge: #2c4a38;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171b; --surface: #1c2026; --sunk: #101317;
+    --ink: #e7e9ec; --dim: #98a0a8; --edge: #2b3038;
+    --accent: #63a4d4; --accent-ink: #0c1116;
+    --danger: #ff6f64; --danger-bg: #2c1613; --danger-edge: #5a2a24;
+    --warn: #ffb638; --warn-bg: #2a2213; --warn-edge: #574526;
+    --ok: #55c98d; --ok-bg: #14251c; --ok-edge: #2c4a38;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--ink);
+         font: 16px/1.6 "IBM Plex Sans", system-ui, sans-serif;
+         -webkit-text-size-adjust: 100%; }
+  .wrap { max-width: 720px; margin: 0 auto; padding: 30px 18px 60px; }
+  h1, h2, .kicker { font-family: "Chakra Petch", system-ui, sans-serif; }
+  .kicker { font-size: .74rem; letter-spacing: .16em; text-transform: uppercase;
+            color: var(--accent); font-weight: 600; }
+  h1 { font-size: 2rem; font-weight: 700; line-height: 1.1; margin: 8px 0 0;
+       letter-spacing: .3px; text-wrap: balance; }
+  .lede { color: var(--dim); margin-top: 12px; max-width: 60ch; }
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
+  .chip { font-family: "IBM Plex Mono", monospace; font-size: .72rem;
+          background: var(--sunk); border: 1px solid var(--edge); color: var(--dim);
+          padding: 4px 9px; border-radius: 5px; }
+  h2 { font-size: 1.24rem; font-weight: 600; margin: 38px 0 4px;
+       display: flex; align-items: baseline; gap: 10px; }
+  h2 .n { font-family: "IBM Plex Mono", monospace; color: var(--accent);
+          font-size: .9rem; font-weight: 500; }
+  .sub { color: var(--dim); font-size: .92rem; margin: 2px 0 14px; }
+  p { margin: 10px 0; }
+  code { font-family: "IBM Plex Mono", monospace; background: var(--sunk);
+         border: 1px solid var(--edge); border-radius: 5px; padding: .08em .4em;
+         font-size: .85em; overflow-wrap: anywhere; }
+  .call { border-radius: 12px; padding: 15px 17px; margin: 18px 0;
+          border: 1px solid var(--edge); display: flex; gap: 13px; align-items: flex-start; }
+  .call .ic { font-size: 1.3rem; line-height: 1.25; flex: 0 0 auto; }
+  .call b { font-weight: 600; }
+  .call.danger { background: var(--danger-bg); border-color: var(--danger-edge); }
+  .call.danger b { color: var(--danger); }
+  .call.warn { background: var(--warn-bg); border-color: var(--warn-edge); }
+  .call.warn b { color: var(--warn); }
+  .call.ok { background: var(--ok-bg); border-color: var(--ok-edge); }
+  .call.ok b { color: var(--ok); }
+  ol.steps { list-style: none; counter-reset: s; padding: 0; margin: 14px 0; }
+  ol.steps > li { counter-increment: s; position: relative; padding: 0 0 4px 42px;
+                  margin: 0 0 15px; }
+  ol.steps > li::before { content: counter(s); position: absolute; left: 0; top: -1px;
+    width: 28px; height: 28px; border-radius: 8px; background: var(--accent);
+    color: var(--accent-ink); font-family: "Chakra Petch", sans-serif; font-weight: 700;
+    display: flex; align-items: center; justify-content: center; font-size: .92rem; }
+  ol.steps > li b { font-weight: 600; }
+  .chipmap { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 14px 0; }
+  .cm { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start;
+        border: 1px solid var(--edge); border-radius: 10px; padding: 11px 14px;
+        background: var(--surface); }
+  .cm .tag { font-family: "IBM Plex Mono", monospace; font-size: .78rem; font-weight: 500;
+             white-space: nowrap; }
+  .cm.go { border-color: var(--ok-edge); } .cm.go .tag { color: var(--ok); }
+  .cm.stop { border-color: var(--danger-edge); } .cm.stop .tag { color: var(--danger); }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 12px 0;
+        font-size: .93rem; }
+  .kv dt { font-family: "IBM Plex Mono", monospace; color: var(--accent); font-weight: 500; }
+  .kv dd { margin: 0; }
+  ul.tight { margin: 8px 0; padding-left: 20px; } ul.tight li { margin: 6px 0; }
+  .divide { height: 1px; background: var(--edge); border: 0; margin: 38px 0 0; }
+  footer { color: var(--dim); font-size: .82rem; margin-top: 20px; }
+  a { color: var(--accent); }
+  @media (max-width: 480px) { h1 { font-size: 1.65rem; } .wrap { padding: 22px 14px 50px; } }
+</style>
+
+<div class="wrap">
+  <div class="kicker">Ender 3 V2 · 4.2.2 board · BLTouch</div>
+  <h1>Firmware Flash + Sensor</h1>
+  <p class="lede">Flashing mriscoc firmware so the printer can read the BTT motion filament
+  sensor on its own board — keeping your BLTouch — then wiring and testing the sensor. We do
+  this together, with photo checks at every risky step.</p>
+  <div class="chips">
+    <span class="chip">mriscoc Pro firmware</span>
+    <span class="chip">motion-sensor mode</span>
+    <span class="chip">keeps BLTouch + mesh</span>
+  </div>
+
+  <div class="call danger">
+    <span class="ic">⛔</span>
+    <div>Three rules that keep this safe: <b>(1)</b> confirm the chip before flashing —
+    we verify it's a GD32 or STM32, not a rarer clone. <b>(2)</b> During the flash the
+    screen goes black for ~15 seconds — <b>never cut power</b> mid-flash. <b>(3)</b> A flash
+    wipes your bed leveling and Z-offset — <b>we re-do them before the first print</b>, or the
+    nozzle digs into the bed.</div>
+  </div>
+
+  <h2><span class="n">0</span> Confirm the chip — do this FIRST</h2>
+  <p class="sub">Creality swapped chips silently between boards, and the firmware only matches
+  some of them. Open the mainboard cover (printer off, unplugged) and photograph the big
+  square chip in the center under good light. 📸 <b>Send it to me and I'll read it</b> — or
+  read the top line yourself:</p>
+  <div class="chipmap">
+    <div class="cm go"><span class="tag">GD32F303RET6</span><span>✓ Go — this is your expected chip. The standard file works.</span></div>
+    <div class="cm go"><span class="tag">STM32F103RET6</span><span>✓ Go — also fine, same file.</span></div>
+    <div class="cm stop"><span class="tag">N32G455 / HC32 / HK32</span><span>🛑 STOP and tell me — these rarer clones need a different firmware and the standard file can brick them.</span></div>
+  </div>
+
+  <h2><span class="n">1</span> Download the firmware file</h2>
+  <p class="sub">On your Mac, from the mriscoc releases page.</p>
+  <ul class="tight">
+    <li>Go to <code>github.com/mriscoc/Ender3V2S1/releases/latest</code></li>
+    <li>Download the file named <code>Ender3V2-422-BLTUBL-MPC-&lt;date&gt;.bin</code>
+      (newest date). <br><span class="sub" style="margin:2px 0 0">422 = your board · BLT =
+      your BLTouch · UBL = bed mesh — this is the right one.</span></li>
+  </ul>
+
+  <h2><span class="n">2</span> Prepare the SD card</h2>
+  <p class="sub">SD-card fussiness is the #1 cause of a failed flash on these boards — worth
+  getting exactly right. <b>Use a spare card, not the Pi's.</b></p>
+  <dl class="kv">
+    <dt>Card</dt><dd>a blank microSD, <b>2–8 GB is ideal</b> (≤16 GB)</dd>
+    <dt>Format</dt><dd>FAT32, <b>4096-byte</b> allocation unit, MBR partition</dd>
+    <dt>Contents</dt><dd>the one <code>.bin</code> at the top level (root), nothing else</dd>
+    <dt>Name</dt><dd>rename it something short and <b>never-used-before</b>, e.g.
+      <code>fw1.bin</code> — the board ignores a filename it already flashed</dd>
+  </dl>
+  <div class="call ok">
+    <span class="ic">✓</span>
+    <div><b>Nice safety net (optional):</b> first flash your <i>current</i> stock firmware
+    (renamed <code>stock1.bin</code>) the same way — if it boots, you've proven the card/flash
+    path works and can always get back to known-good. Then flash the new one.</div>
+  </div>
+
+  <h2><span class="n">3</span> Flash the board</h2>
+  <ol class="steps">
+    <li>Printer <b>off</b>, and <b>unplug the USB cable</b> from the printer (USB can block the flash).</li>
+    <li>Insert the SD card into the <b>printer's</b> card slot. Power on.</li>
+    <li><b>Screen stays black ~15 seconds — this is normal. Do NOT cut power.</b> Wait a full 30–60 seconds.</li>
+    <li>Success = it boots into the new menu (looks different from stock). Check the version in <b>Info / About</b>.</li>
+    <li>If it stays blank or stuck on the logo → see <b>Recovery</b> at the bottom. It's almost never a real brick.</li>
+  </ol>
+
+  <h2><span class="n">4</span> Re-level + reset Z-offset — mandatory</h2>
+  <div class="call warn">
+    <span class="ic">⚠️</span>
+    <div>The flash wiped your saved settings. <b>Skip this and the first print can crash the
+    nozzle into the bed.</b> Do it before printing anything.</div>
+  </div>
+  <ol class="steps">
+    <li><b>Control → Restore Defaults</b>, then <b>Store Settings</b>.</li>
+    <li>Confirm the <b>BLTouch</b> deploys/stows (Auto-home — it should probe).</li>
+    <li>Run <b>Bed Leveling</b> (auto mesh), then <b>Store Settings</b>.</li>
+    <li><b>Re-set your Z-offset</b> with the paper method, Store Settings, and do a first-layer check. I'll walk you through this live.</li>
+  </ol>
+
+  <h2><span class="n">5</span> Wire the sensor — printer OFF</h2>
+  <p class="sub">The correct port is <b>FIL-DET</b> — the 3-pin header <b>next to the
+  Z-endstop</b> (not the ones near X, where it was before). It's labeled <code>S − +</code>.</p>
+  <dl class="kv">
+    <dt>S → S</dt><dd>sensor signal → the <code>S</code> pin</dd>
+    <dt>G → −</dt><dd>sensor ground → the <code>−</code> pin</dd>
+    <dt>V → +</dt><dd>sensor power → the <code>+</code> pin (<b>5V is fine here</b> — unlike the Pi)</dd>
+  </dl>
+  <p>Identify the sensor's S/G/V by the pin card in its box, <b>not by wire color</b>. Hold
+  the plug next to the header and check the order lines up before pushing it in. 📸 <b>Send me
+  a photo of the plug on the FIL-DET header</b> before we power on. BLTouch is on different
+  pins — this doesn't touch it.</p>
+
+  <h2><span class="n">6</span> Turn on motion mode</h2>
+  <p class="sub">On the printer LCD, after boot:</p>
+  <dl class="kv">
+    <dt>Filament</dt><dd><b>Control → Filament Settings</b> (or Advanced)</dd>
+    <dt>Runout</dt><dd>turn <b>Runout ON</b></dd>
+    <dt>Runout Active</dt><dd>set to <b>MOTION</b> — this is the setting made for the BTT motion sensor</dd>
+    <dt>Runout distance</dt><dd>start at <b>~14 mm</b> (raise to 20–30 if it false-triggers mid-print)</dd>
+  </dl>
+
+  <h2><span class="n">7</span> Test it before trusting a real print</h2>
+  <ol class="steps">
+    <li>Load filament through the sensor and into the extruder.</li>
+    <li>Start a <b>short throwaway print</b>; let it lay a few lines.</li>
+    <li><b>Flip open the extruder idler arm</b> so filament stops feeding (no grinding), and hold the filament still.</li>
+    <li>Within your Runout-distance the printer should <b>pause on its own</b>. That's the whole thing working.</li>
+    <li>Flip the arm back, reload, resume or cancel. Fully reversible.</li>
+  </ol>
+
+  <hr class="divide">
+  <footer>
+    <p><b>Recovery if the flash doesn't take</b> (blank / stuck logo), in order: rename the
+    <code>.bin</code> to something new → reformat the card (MBR / FAT32 / 4096) → try a
+    different small card (2–8 GB) → reseat the display ribbon. The bootloader is protected, so
+    a bad SD flash is a soft-brick you recover by re-flashing — not a dead board. If none work,
+    stop and tell me.</p>
+    <p style="margin-top:10px">Firmware: mriscoc Professional Firmware
+    (<code>Ender3V2-422-BLTUBL-MPC</code>). Verified for a GD32F303 4.2.2 with BLTouch +
+    motion-sensor runout. We do every step together — nothing prints without your go-ahead and
+    a first-layer check.</p>
+  </footer>
+</div>
