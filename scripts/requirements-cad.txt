@@ -17,6 +17,7 @@ packaging==26.3
 pillow==12.3.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
+rtree==1.4.1
 runtype==0.5.3
 scipy==1.18.1
 shapely==2.1.2

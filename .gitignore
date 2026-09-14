@@ -10,6 +10,7 @@ temp/
 !test-parts/*.stl
 __pycache__/
 models/.history/
+models/.state/
 uploads/
 models/imports/
 *.material

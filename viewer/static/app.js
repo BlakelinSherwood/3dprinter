@@ -4,6 +4,24 @@ import { STLLoader } from 'three/addons/loaders/STLLoader.js';
 
 const $ = (id) => document.getElementById(id);
 
+// Home studio (beside the printer) or cloud studio (design-only, behind a
+// password). The server enforces the difference; the page hides what the
+// cloud can't do, and a lapsed cloud sign-in goes back to the sign-in page.
+const CFG = await fetch('/api/config')
+  .then(r => { if (r.status === 401) location.href = '/login'; return r.json(); })
+  .catch(() => ({ mode: 'home' }));
+const CLOUD = CFG.mode === 'cloud';
+if (CLOUD) {
+  const fetch0 = window.fetch.bind(window);
+  window.fetch = async (...args) => {
+    const r = await fetch0(...args);
+    if (r.status === 401) location.href = '/login';
+    return r;
+  };
+}
+const TOUCH = matchMedia('(pointer: coarse)').matches;
+const PHONE = matchMedia('(max-width: 600px)').matches;
+
 // Units are a display layer only - models, STL and G-code are always mm.
 const MM_IN = 25.4;
 let units = 'in';
@@ -205,12 +223,14 @@ function buildRulers() {
 let focus = null;        // {point:[x,y,z] model mm, region: "words"}
 let focusMarker = null;
 
+const ORBIT_HINT = TOUCH ? 'drag to orbit · pinch to zoom' : 'drag to orbit · scroll to zoom';
 function updateBadge() {
   if (focus) $('badge').textContent = `◎ edits aim at: ${focus.region || 'that spot'}`;
   else if (mesh) $('badge').textContent =
-    'drag to orbit · scroll to zoom · click a spot to aim a change';
-  else $('badge').textContent = 'drag to orbit · scroll to zoom';
+    `${ORBIT_HINT} · ${TOUCH ? 'tap' : 'click'} a spot to aim a change`;
+  else $('badge').textContent = ORBIT_HINT;
 }
+updateBadge();
 
 function clearFocus() {
   focus = null;
@@ -295,7 +315,7 @@ function activeStage() {
     if ($('st2').classList.contains(cls)) return 2;
     if ($('st3').classList.contains(cls)) return 3;
   }
-  return 3;
+  return CLOUD ? 2 : 3;
 }
 
 function fatalWarning() {
@@ -349,11 +369,14 @@ function updateStages() {
 
   // Exactly one expanded stage unless the user has toggled one open.
   const act = s1 === 'active' || s1 === 'working' ? $('st1')
-            : (s2 === 'active' || s2 === 'working' || s2 === 'error') ? $('st2') : $('st3');
+            : (s2 === 'active' || s2 === 'working' || s2 === 'error') ? $('st2')
+            : CLOUD ? $('st2') : $('st3');
   for (const el of [$('st1'), $('st2'), $('st3')])
     if (el !== act && userOpen !== el.id) el.classList.remove('active');
   if (!act.classList.contains('done')) act.classList.add(
     act.classList.contains('working') ? 'working' : act.classList.contains('error') ? 'error' : 'active');
+  // the cloud has no Print stage, so a finished Shape stays open for tweaking
+  if (CLOUD && act === $('st2') && !userOpen) act.classList.add('open');
 
   // Buttons
   $('slice').disabled = !state.generated || busy || fatal;
@@ -362,9 +385,9 @@ function updateStages() {
   $('upload').disabled = busy;
   $('reslice').hidden = !state.sliced || state.uploaded;
   $('revert').disabled = busy || !(m && m.has_history);
-  $('makeprint').hidden = !(m && m.imported);
+  $('makeprint').hidden = CLOUD || !(m && m.imported);   // both need Blender
   $('makeprint').disabled = busy;
-  $('solidify').hidden = !(m && m.imported);
+  $('solidify').hidden = CLOUD || !(m && m.imported);
   $('solidify').disabled = busy;
   $('orientbtn').hidden = !(m && m.imported);
   $('orientbtn').disabled = busy;
@@ -444,7 +467,8 @@ function renderParams(model) {
     input.type = 'number';
     input.step = unitless ? '0.01' : (units === 'in' ? '0.01' : '0.1');
     input.id = 'p_' + p.name;
-    input.value = unitless ? p.default : toDisplay(p.default);
+    const mm = model.state?.params?.[p.name] ?? p.default;   // last-used value, if any
+    input.value = unitless ? mm : toDisplay(mm);
     input.dataset.param = p.name;
     if (unitless) input.dataset.unitless = '1';
     input.addEventListener('input', () => {
@@ -454,6 +478,15 @@ function renderParams(model) {
     field.append(label, input);
     box.appendChild(field);
   }
+}
+
+// Scale and rotation this design was last built with - kept server-side per
+// design, so a part shaped on the phone comes home the way it was left.
+function applyModelState(m) {
+  const st = m?.state;
+  $('scale').value = st?.scale ?? 1;
+  rot = Array.isArray(st?.rot) ? st.rot.map(Number) : [0, 0, 0];
+  $('rotval').textContent = rot.join('/');
 }
 
 function currentParams() {
@@ -1320,9 +1353,8 @@ $('scale').onchange = () => {
 };
 $('model').onchange = () => {
   if (tp.printed || tp.on) tpClear();
-  $('scale').value = 1;
-  rot = [0, 0, 0]; $('rotval').textContent = '0/0/0';
   const m = currentModel();
+  applyModelState(m);
   $('model').title = m?.summary || '';
   renderParams(m);
   state.generated = false;
@@ -1492,7 +1524,7 @@ window.addEventListener('resize', () => {
 });
 {
   const st = panelState();
-  if (st.float) setFloat(true, st.x, st.y);
+  if (st.float && !PHONE) setFloat(true, st.x, st.y);
 }
 
 // ---------------------------- printer status ----------------------------
@@ -1520,8 +1552,10 @@ async function pollPrinter() {
     $('ptext').textContent = 'studio server unreachable';
   }
 }
-pollPrinter();
-setInterval(pollPrinter, 5000);
+if (!CLOUD) {
+  pollPrinter();
+  setInterval(pollPrinter, 5000);
+}
 
 // ---------------------------- OctoPrint queue ----------------------------
 function fmtSize(b) {
@@ -1577,7 +1611,7 @@ async function loadQueue() {
   } catch (e) { $('qcount').textContent = '?'; }
 }
 $('queue').addEventListener('toggle', () => { if ($('queue').open) loadQueue(); });
-loadQueue();
+if (!CLOUD) loadQueue();
 
 // ---------------------------- toolpath view ----------------------------
 // The sliced G-code rendered as real toolpaths: feature-colored line
@@ -1759,6 +1793,136 @@ updateStages = function () {
   $('tpbtn').disabled = busy || !$('model').value;
 };
 
+// ---------------------------- cloud studio / from the phone ----------------------------
+if (CLOUD) {
+  for (const id of ['st3', 'queue']) $(id).hidden = true;
+  $('cloudnote').hidden = false;
+  $('signout').hidden = false;
+  $('ptext').textContent = 'cloud studio · print at home';
+  $('foot').textContent = 'Cloud copy: design only. Slicing, uploads and printing ' +
+    'happen in the home studio.';
+  const blenderOnly = ['.fbx', '.dae', '.usd', '.usdz', '.usdc', '.usda', '.blend'];
+  $('importfile').accept = $('importfile').accept.split(',')
+    .filter(ext => !blenderOnly.includes(ext)).join(',');
+  $('importbtn').title = 'Import a 3D file: meshes (STL, OBJ, PLY, OFF, GLB, GLTF, 3MF) ' +
+    'or CAD solids (STEP, STP, IGES, IGS, BREP). FBX / DAE / USD need the home studio.';
+  $('signout').onclick = async () => {
+    try { await api('/api/logout', {}); } catch {}
+    location.href = '/login';
+  };
+} else {
+  $('cloudbox').hidden = false;
+  $('cloudbox').addEventListener('toggle', () => { if ($('cloudbox').open) loadCloud(); });
+  $('crefresh').onclick = () => loadCloud();
+  $('cdisconnect').onclick = async () => {
+    try {
+      await api('/api/cloud/disconnect', {});
+      log('disconnected from the cloud studio', 'dim');
+    } catch (e) { log(e.message, 'bad'); }
+    loadCloud();
+  };
+  $('cgo').onclick = async () => {
+    const url = $('curl').value.trim(), password = $('cpass').value;
+    if (!url || !password) { log('enter the cloud studio address and its password', 'bad'); return; }
+    $('cgo').disabled = true; $('cgo').textContent = 'connecting…';
+    try {
+      await api('/api/cloud/connect', { url, password });
+      $('cpass').value = '';
+      log('connected to the cloud studio', 'ok');
+      await loadCloud();
+    } catch (e) { log(e.message, 'bad'); }
+    $('cgo').disabled = false; $('cgo').textContent = 'Connect';
+  };
+  $('cpass').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('cgo').click(); });
+}
+
+const CLOUD_TAGS = { new: 'new', differs: 'differs from yours',
+                     settings: 'new settings', same: 'here ✓' };
+
+// Runs only when the section is opened - listing designs wakes the cloud service.
+async function loadCloud() {
+  let st;
+  try { st = await (await fetch('/api/cloud/status')).json(); }
+  catch { $('clist').textContent = 'studio server unreachable'; return; }
+  $('cconnect').hidden = st.connected;
+  $('cfoot').hidden = !st.connected;
+  const box = $('clist');
+  if (!st.connected) { box.textContent = ''; return; }
+  box.innerHTML = '<div class="fsub">checking your cloud studio…</div>';
+  try {
+    const items = await (await fetch('/api/cloud/designs')).json();
+    if (items.error) throw new Error(items.error);
+    box.textContent = '';
+    if (!items.length)
+      box.innerHTML = '<div class="fsub">nothing yet — parts you make or change on your phone show up here</div>';
+    for (const it of items) {
+      const row = document.createElement('div');
+      row.className = 'crow';
+      const name = document.createElement('span');
+      name.className = 'cname';
+      name.textContent = it.name;
+      name.title = `${it.summary || ''}\nchanged ${new Date(it.modified * 1000).toLocaleString()}`;
+      const tag = document.createElement('span');
+      tag.className = 'ctag' + (it.status === 'new' ? ' new' : '');
+      tag.textContent = CLOUD_TAGS[it.status] || it.status;
+      row.append(name, tag);
+      if (it.status !== 'same') {
+        const go = document.createElement('button');
+        go.textContent = 'bring home';
+        go.onclick = () => pullDesign(it, go, false);
+        row.appendChild(go);
+      }
+      box.appendChild(row);
+    }
+  } catch (e) {
+    box.textContent = '';
+    const msg = document.createElement('div');
+    msg.className = 'fsub';
+    msg.textContent = e.message;
+    box.appendChild(msg);
+  }
+}
+
+async function pullDesign(it, btn, overwrite) {
+  if (busy) { log('wait for the current operation to finish first', 'bad'); return; }
+  setBusy(true);
+  btn.disabled = true;
+  btn.textContent = 'bringing…';
+  try {
+    const res = await api('/api/cloud/pull', { name: it.name, overwrite });
+    if (res.conflict) {
+      // two-step confirm, like the queue's delete - yours gets kept either way
+      btn.disabled = false;
+      btn.classList.add('armed');
+      btn.textContent = 'replace mine?';
+      btn.onclick = () => pullDesign(it, btn, true);
+      stageMsg(activeStage(), `${it.name} differs from your copy — "replace mine?" takes ` +
+        `the phone's version and keeps yours`, 'warn');
+      setBusy(false);
+      return;
+    }
+    await refreshModels(res.model);
+    applyModelState(currentModel());
+    state.generated = false;
+    invalidateSlice('part from your phone');
+    setMode('edit');
+    await doGenerate();
+    const keptPart = res.kept?.some(k => k.endsWith('.py'));
+    log(`${res.model} brought home from the cloud studio` +
+        (res.kept?.length ? ' — your previous copy is kept' : '') +
+        (keptPart ? ' (undo change swaps back)' : ''), 'ok');
+    stageMsg(2, `${res.model} is here from your phone — slice and print as usual`, 'ok');
+    loadCloud();
+  } catch (e) {
+    log(e.message, 'bad');
+    btn.disabled = false;
+    btn.classList.remove('armed');
+    btn.textContent = 'bring home';
+    btn.onclick = () => pullDesign(it, btn, false);
+  }
+  setBusy(false);
+}
+
 // ---------------------------- init ----------------------------
 (async function init() {
   setMode('new');
@@ -1772,6 +1936,7 @@ updateStages = function () {
   if (models.length) {
     $('model').value = models[0].name;
     $('model').title = models[0].summary || '';
+    applyModelState(models[0]);
     renderParams(models[0]);
     setMode('edit');
     doGenerate();

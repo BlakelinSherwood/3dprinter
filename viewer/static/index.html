@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Part Studio</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#14161a">
 <style>
   :root {
     --bg: #14161a; --panel: #1c1f26; --edge: #2a2e37; --text: #e6e8ec;
@@ -134,9 +135,22 @@
   #printsum { display: flex; align-items: center; gap: 8px; margin-top: 10px;
     color: var(--dim); font-size: 12px; cursor: pointer; }
   #printsum b { color: var(--text); font-weight: 600; }
-  #queue, #logbox { border-top: 1px solid var(--edge); padding: 8px 16px; flex: none; }
-  #queue summary, #logbox summary { color: var(--dim); font-size: 12px;
+  #queue, #logbox, #cloudbox { border-top: 1px solid var(--edge); padding: 8px 16px; flex: none; }
+  #queue summary, #logbox summary, #cloudbox summary { color: var(--dim); font-size: 12px;
     cursor: pointer; user-select: none; }
+  #cconnect input { width: 100%; margin-top: 6px; padding: 7px 9px; background: var(--bg);
+    color: var(--text); border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
+  #cconnect button { width: 100%; margin-top: 8px; }
+  #clist { max-height: 190px; overflow-y: auto; margin-top: 6px; }
+  .crow { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 12px; }
+  .crow .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; }
+  .crow .ctag { color: var(--dim); font-size: 11px; flex: 0 0 auto; }
+  .crow .ctag.new { color: var(--ok); }
+  .crow button { flex: 0 0 auto; padding: 3px 10px; font-size: 12px; font-weight: 500; }
+  .crow button.armed { background: #ffb224; color: #1c1f26; }
+  #cfoot { display: flex; justify-content: flex-end; gap: 4px; margin-top: 4px; }
+  #cfoot[hidden], #cconnect[hidden] { display: none; }
   #queue[open] #qlist { max-height: 130px; overflow-y: auto; margin-top: 6px;
     padding-right: 14px; scrollbar-gutter: stable; }
   .qrow { display: flex; align-items: center; gap: 8px; padding: 3px 0;
@@ -237,6 +251,37 @@
   #tplive { color: #ffb224; font-size: 12px; font-weight: 700;
             display: flex; align-items: center; gap: 5px; }
   #tpclose { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
+  #signout { margin: 2px 0 0 -8px; }
+
+  /* ------------------------------ phones ------------------------------ */
+  /* The viewer pins to the top and the panel scrolls beneath it, so a slider
+     change shows up without scrolling back. */
+  @media (max-width: 600px) {
+    body { flex-direction: column; height: auto; min-height: 100vh; min-height: 100dvh; }
+    #view { order: -1; flex: none; height: 46vh; height: 46dvh; min-height: 250px;
+            position: sticky; top: 0; z-index: 5; border-bottom: 1px solid var(--edge); }
+    #badge { left: 8px; right: 8px; top: 8px; text-align: center; font-size: 11px; }
+    #side, #side.float { position: static; width: 100%; min-width: 0; max-height: none;
+            border: 0; border-radius: 0; box-shadow: none; background: var(--panel); }
+    #side header { flex-wrap: wrap; gap: 8px; padding: 12px 14px; }
+    #popout { display: none; }
+    #controls { overflow: visible; padding: 4px 10px 14px; }
+    .stagehead { padding: 12px; }
+    .row button { min-height: 40px; }
+    #focusrow button, #clearphoto, .crow button, .frow button, .tiny { min-height: 0; }
+    select, input, textarea { font-size: 16px; }   /* below 16px iOS zooms in on focus */
+    #photorow { flex-wrap: wrap; }
+    #photoname { flex: 1 1 100%; order: 9; }
+    #finder, #gang, #bp { left: 8px; right: 8px; top: 8px; width: auto;
+            max-height: calc(100dvh - 16px); }
+    #bpviews { grid-template-columns: 1fr; }
+    .frow { padding-left: 0; }
+    #tpui { left: 8px; right: 8px; bottom: 8px; transform: none; flex-wrap: wrap; gap: 8px; }
+    #tplayer { flex: 1 1 140px; width: auto; }
+    #tplabel { min-width: 0; }
+    #log { height: 120px; }
+    footer { padding-bottom: calc(10px + env(safe-area-inset-bottom)); }
+  }
 </style>
 </head>
 <body>
@@ -246,6 +291,7 @@
         <h1>Part Studio</h1>
         <div class="sub">Ender 3 V2 &middot; 220&times;220&times;250</div>
         <div class="sub" id="printer"><span class="dot" id="pdot"></span><span id="ptext">checking printer…</span></div>
+        <button id="signout" class="tiny" hidden title="Sign out of the cloud studio">sign out</button>
       </div>
       <div style="display:flex; gap:6px; align-items:center">
         <button id="ruler" title="Show measuring rulers at print size">&#128207; size</button>
@@ -429,7 +475,34 @@
         </div>
       </section>
 
+      <!-- cloud studio only: printing is a home job -->
+      <section class="stage open" id="cloudnote" hidden>
+        <div class="stagehead">
+          <span class="chip">&#9729;</span><h2>Print it at home</h2>
+        </div>
+        <div class="stagebody">
+          <div class="hint" style="font-size:12.5px; margin-top:0">Parts you make or
+            change here stay in your cloud studio. At home, open Part Studio,
+            expand <b>&#9729; From your phone</b> and bring the part in, then slice
+            and print as usual.</div>
+        </div>
+      </section>
+
     </div>
+    <details id="cloudbox" hidden>
+      <summary>&#9729; From your phone</summary>
+      <div id="cconnect" hidden>
+        <input type="url" id="curl" placeholder="https://…up.railway.app" spellcheck="false" autocomplete="url">
+        <input type="password" id="cpass" placeholder="cloud studio password" autocomplete="current-password">
+        <button id="cgo" class="primary">Connect</button>
+        <div class="hint">One time only. The password isn't saved &mdash; this Mac keeps a sign-in token.</div>
+      </div>
+      <div id="clist"></div>
+      <div id="cfoot" hidden>
+        <button id="crefresh" class="tiny">refresh</button>
+        <button id="cdisconnect" class="tiny">disconnect</button>
+      </div>
+    </details>
     <details id="queue">
       <summary>OctoPrint queue (<span id="qcount">&hellip;</span>)</summary>
       <div id="qlist"></div>
@@ -438,7 +511,7 @@
       <summary>Activity log</summary>
       <div id="log"></div>
     </details>
-    <footer>Uploads never select or start a print. Printing happens only via
+    <footer id="foot">Uploads never select or start a print. Printing happens only via
     Claude, with explicit approval, after a first-layer check.</footer>
   </div>
   <div id="gang" hidden>

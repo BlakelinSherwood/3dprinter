@@ -32,9 +32,17 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import cloudstudio
+
 REPO = Path(__file__).resolve().parent.parent
-MODELS = REPO / "models"
-OUTPUT = REPO / "output"
+# STUDIO_MODE=cloud: this same studio on a hosted server, for designing from a
+# phone - password-gated, data on a volume (STUDIO_DATA), printer-side routes
+# refused. See cloudstudio.py.
+CLOUD = os.environ.get("STUDIO_MODE", "").strip().lower() == "cloud"
+DATA = Path(os.environ["STUDIO_DATA"]) if os.environ.get("STUDIO_DATA") else REPO
+MODELS = DATA / "models"
+OUTPUT = DATA / "output"
+UPLOADS = DATA / "uploads"
 STATIC = Path(__file__).resolve().parent / "static"
 
 MIME = {
@@ -184,6 +192,12 @@ def call_claude(prompt, allow_read=False, model="sonnet"):
     )
     if p.returncode != 0:
         out = (p.stderr or "") + (p.stdout or "")
+        if ("Not logged in" in out or "/login" in out) and CLOUD:
+            raise RuntimeError(
+                "Building from a description isn't switched on in the cloud "
+                "studio yet: on the Mac run `claude setup-token`, then add the "
+                "token in Railway as the variable CLAUDE_CODE_OAUTH_TOKEN. "
+                "Everything else works without it.")
         if "Not logged in" in out or "/login" in out:
             raise RuntimeError(
                 "The claude CLI is not logged in, so description-to-model is "
@@ -298,6 +312,10 @@ def _brep_to_stl(src, dst, ext):
 def _blender_to_stl(src, dst, ext):
     """FBX / Collada / 3DS / X3D / USD / .blend -> STL, via headless Blender.
     These are what Chief Architect, SketchUp, and game/viz tools export."""
+    if CLOUD:
+        raise RuntimeError(
+            f"{ext} files need Blender, which only the home studio has - import "
+            "this one at home, or export it as STL, OBJ or STEP")
     if not Path(BLENDER).is_file():
         raise RuntimeError(
             f"{ext} files need Blender to convert - install it with "
@@ -488,9 +506,8 @@ def save_reference_image(image):
     ext = IMAGE_EXTS.get(Path(image.get("name", "photo.png")).suffix.lower())
     if not ext:
         raise ValueError("unsupported image type (png/jpg/webp/gif)")
-    uploads = REPO / "uploads"
-    uploads.mkdir(exist_ok=True)
-    path = uploads / f"ref-{int(time.time())}{ext}"
+    UPLOADS.mkdir(parents=True, exist_ok=True)
+    path = UPLOADS / f"ref-{int(time.time())}{ext}"
     path.write_bytes(data)
     return path
 
@@ -656,8 +673,8 @@ def render_views(name):
     mesh = trimesh.load(str(OUTPUT / f"{name}.stl"), force="mesh")
     v, f = mesh.vertices, mesh.faces
     ext = v.max(axis=0) - v.min(axis=0)
-    out = REPO / "uploads"
-    out.mkdir(exist_ok=True)
+    out = UPLOADS
+    out.mkdir(parents=True, exist_ok=True)
     paths = []
     for label, elev, azim in (("iso", 22, -55), ("front", 4, -90), ("side", 4, 0)):
         fig = plt.figure(figsize=(5.5, 4.2), dpi=100)
@@ -916,7 +933,8 @@ def list_models():
     for f in (IMPORTS.glob("*.stl") if IMPORTS.is_dir() else []):
         entries.append((f.stat().st_mtime,
                         {"name": f.stem, "summary": "imported mesh",
-                         "params": [], "imported": True}))
+                         "params": [], "imported": True,
+                         "state": cloudstudio.design_state(MODELS, f.stem)}))
     for f in MODELS.glob("*.py"):
         if f.stem.startswith("_"):
             continue
@@ -929,6 +947,7 @@ def list_models():
                 "summary": doc[0] if doc else "",
                 "params": model_params(mod),
                 "has_history": bool(hist.is_dir() and list(hist.glob(f"{f.stem}-*.py"))),
+                "state": cloudstudio.design_state(MODELS, f.stem),
             }))
         except Exception:
             entries.append((f.stat().st_mtime,
@@ -2171,16 +2190,42 @@ def revert_model(name):
     return {"model": name, "note": "previous version restored - revert again to switch back"}
 
 
+# ------------------------------ cloud mode ------------------------------
+AUTH = cloudstudio.Auth(DATA, os.environ.get("STUDIO_PASSWORD", "")) if CLOUD else None
+LOGINS = cloudstudio.LoginLimiter()
+# Hostnames the cloud answers to besides localhost: Railway's generated
+# domain, plus a custom one if it ever gets one.
+PUBLIC_HOSTS = {h.strip().lower() for h in (
+    os.environ.get("RAILWAY_PUBLIC_DOMAIN", "") + ","
+    + os.environ.get("STUDIO_PUBLIC_HOST", "")).split(",") if h.strip()} if CLOUD else set()
+# The page hides these in the cloud; the server is what actually says no.
+CLOUD_REFUSED = {
+    "/api/slice": "slicing happens in the home studio - bring this part home first",
+    "/api/upload": "sending to the printer happens in the home studio",
+    "/api/files/delete": "the printer queue is only in the home studio",
+    "/api/material_lookup": "filament setup happens in the home studio",
+    "/api/make_printable": "make printable needs Blender - run it in the home studio",
+    "/api/solidify": "solidify walls needs Blender - run it in the home studio",
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _send(self, code, body, ctype="application/json"):
+    def _send(self, code, body, ctype="application/json", headers=None):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "no-store")
+        if CLOUD:
+            self.send_header("Strict-Transport-Security", "max-age=31536000")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Referrer-Policy", "same-origin")
+        for k, v in (headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(data)
 
@@ -2189,8 +2234,88 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, {"error": "not found"})
         self._send(200, path.read_bytes(), MIME.get(path.suffix, "application/octet-stream"))
 
+    def _redirect(self, where):
+        self._send(302, b"", "text/plain", {"Location": where})
+
+    def _host_ok(self):
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].lower()
+        return host in ("127.0.0.1", "localhost", "[::1]", "") or host in PUBLIC_HOSTS
+
+    def _origin_ok(self):
+        # Same-origin only: a drive-by web page in a local browser can POST
+        # to 127.0.0.1 cross-site; the browser always attaches Origin there.
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        try:
+            o = urllib.parse.urlparse(origin)
+            if (o.hostname or "").lower() in PUBLIC_HOSTS:
+                return o.scheme == "https"
+            my_port = self.server.server_address[1]
+            return (o.hostname in ("127.0.0.1", "localhost", "::1")
+                    and (o.port or (443 if o.scheme == "https" else 80)) == my_port)
+        except ValueError:          # malformed port
+            return False
+
+    def _authed(self):
+        return AUTH.verify(cloudstudio.token_from_headers(self.headers))
+
+    def _client_addr(self):
+        fwd = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        return fwd or self.client_address[0]
+
+    def _cloud_get(self, route):
+        """Cloud-mode GETs: the sign-in gate, then the cloud's own answers for
+        printer-side routes and the design export. True when handled here."""
+        if not self._host_ok():
+            self._send(403, {"error": "unexpected Host"})
+        elif not AUTH.configured:
+            self._send(503, cloudstudio.SETUP_PAGE.encode(), "text/html; charset=utf-8")
+        elif route == "/login":
+            if self._authed():
+                self._redirect("/")
+            else:
+                self._send(200, cloudstudio.LOGIN_PAGE.encode(), "text/html; charset=utf-8")
+        elif not self._authed():
+            if route == "/":
+                self._redirect("/login")
+            else:
+                self._send(401, {"error": "sign in first"})
+        elif route == "/api/printer":
+            self._send(200, {"reachable": False, "state": "cloud studio", "cloud": True})
+        elif route == "/api/printjob":
+            self._send(200, {"state": "cloud"})
+        elif route == "/api/files":
+            self._send(200, [])
+        elif route == "/api/material_custom":
+            self._send(200, {})
+        elif route.startswith("/output/") and route.endswith(".gcode"):
+            self._send(404, {"error": "no G-code in the cloud studio"})
+        elif route == "/api/sync/list":
+            self._send(200, cloudstudio.list_designs(MODELS))
+        elif route == "/api/sync/bundle":
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            try:
+                data = cloudstudio.bundle(MODELS, (query.get("name") or [""])[0])
+            except (ValueError, FileNotFoundError) as e:
+                self._send(404, {"error": str(e)})
+            else:
+                self._send(200, data, "application/zip")
+        else:
+            return False
+        return True
+
     def do_GET(self):
         route = self.path.split("?")[0]
+        if route == "/healthz":      # Railway's probe comes as healthcheck.railway.app
+            return self._send(200, {"ok": True})
+        try:
+            if CLOUD and self._cloud_get(route):
+                return
+        except Exception:
+            return self._send(500, {"error": traceback.format_exc()})
+        if route == "/api/config":
+            return self._send(200, {"mode": "cloud" if CLOUD else "home"})
         if route == "/":
             return self._file(STATIC / "index.html")
         if route.startswith("/static/"):
@@ -2243,21 +2368,55 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, octo_files())
             except Exception:
                 return self._send(500, {"error": traceback.format_exc()})
+        if not CLOUD and route == "/api/cloud/status":
+            return self._send(200, cloudstudio.status())
+        if not CLOUD and route == "/api/cloud/designs":
+            try:
+                return self._send(200, cloudstudio.remote_designs(MODELS))
+            except Exception as e:
+                return self._send(502, {"error": str(e)})
         return self._send(404, {"error": "not found"})
 
+    def _login(self):
+        addr = self._client_addr()
+        if LOGINS.blocked(addr):
+            return self._send(429, {"error": "too many wrong passwords - try again in 15 minutes"})
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            req = json.loads(self.rfile.read(n)) if 0 < n <= 4096 else {}
+        except ValueError:
+            req = {}
+        if not isinstance(req, dict) or not AUTH.check(req.get("password")):
+            LOGINS.failed(addr)
+            print(f"sign-in refused ({addr})", flush=True)
+            time.sleep(0.6)
+            return self._send(401, {"error": "wrong password"})
+        LOGINS.succeeded(addr)
+        home = req.get("client") == "home"
+        print(f"signed in ({addr}{', home studio' if home else ''})", flush=True)
+        if home:
+            return self._send(200, {"ok": True, "token": AUTH.mint(cloudstudio.HOME_DAYS)})
+        return self._send(200, {"ok": True}, headers={
+            "Set-Cookie": cloudstudio.session_cookie(AUTH.mint(cloudstudio.BROWSER_DAYS))})
+
     def do_POST(self):
-        # Same-origin only: a drive-by web page in a local browser can POST
-        # to 127.0.0.1 cross-site; the browser always attaches Origin there.
-        origin = self.headers.get("Origin")
-        if origin:
-            o = urllib.parse.urlparse(origin)
-            my_port = self.server.server_address[1]
-            if (o.hostname not in ("127.0.0.1", "localhost", "::1")
-                    or (o.port or (443 if o.scheme == "https" else 80)) != my_port):
-                return self._send(403, {"error": "cross-origin request refused"})
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
-        if host not in ("127.0.0.1", "localhost", "[::1]", ""):
+        if not self._origin_ok():
+            return self._send(403, {"error": "cross-origin request refused"})
+        if not self._host_ok():
             return self._send(403, {"error": "unexpected Host"})
+        if CLOUD:
+            # the gate comes before any body is read - no anonymous 80MB posts
+            if not AUTH.configured:
+                return self._send(503, {"error": "the cloud studio has no password set yet"})
+            if self.path == "/api/login":
+                return self._login()
+            if not self._authed():
+                return self._send(401, {"error": "sign in first"})
+            if self.path == "/api/logout":
+                return self._send(200, {"ok": True},
+                                  headers={"Set-Cookie": cloudstudio.CLEAR_COOKIE})
+            if self.path in CLOUD_REFUSED:
+                return self._send(403, {"error": CLOUD_REFUSED[self.path]})
         try:
             n = int(self.headers.get("Content-Length") or 0)
             if n > 80 * 1024 * 1024:
@@ -2272,9 +2431,11 @@ class Handler(BaseHTTPRequestHandler):
             # /api/import "name" is a raw OS filename - save_import derives
             # a safe stem from it itself
             if self.path == "/api/generate":
-                return self._send(200, generate(req["model"], req.get("params"),
-                                                req.get("scale", 1.0),
-                                                req.get("rot")))
+                result = generate(req["model"], req.get("params"),
+                                  req.get("scale", 1.0), req.get("rot"))
+                cloudstudio.save_state(MODELS, req["model"], req.get("params"),
+                                       req.get("scale", 1.0), req.get("rot"))
+                return self._send(200, result)
             if self.path == "/api/slice":
                 return self._send(200, do_slice(req["model"], req.get("settings")))
             if self.path == "/api/upload":
@@ -2338,13 +2499,34 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, start_job(
                     describe, req.get("mode", "new"), req.get("model"),
                     req["description"], req.get("image"), req.get("focus")))
+            if not CLOUD and self.path in ("/api/cloud/connect", "/api/cloud/disconnect",
+                                           "/api/cloud/pull"):
+                try:
+                    if self.path == "/api/cloud/connect":
+                        return self._send(200, cloudstudio.connect(
+                            req.get("url"), req.get("password")))
+                    if self.path == "/api/cloud/disconnect":
+                        return self._send(200, cloudstudio.disconnect())
+                    return self._send(200, cloudstudio.pull(
+                        MODELS, req.get("name"), bool(req.get("overwrite"))))
+                except (ValueError, RuntimeError, PermissionError) as e:
+                    return self._send(400, {"error": str(e)})
             return self._send(404, {"error": "not found"})
         except Exception:
             return self._send(500, {"error": traceback.format_exc()})
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8434
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print(f"Part Studio on http://127.0.0.1:{port}  (models: {MODELS})", flush=True)
+    port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv \
+        else int(os.environ.get("PORT") or 8434)
+    host = "127.0.0.1"
+    if CLOUD:
+        host = "0.0.0.0"     # behind the host's TLS proxy; the sign-in gate is the lock
+        cloudstudio.seed_models(REPO / "models", MODELS)
+        if not AUTH.configured:
+            print(f"STUDIO_PASSWORD is missing or under {cloudstudio.MIN_PASSWORD} "
+                  "characters - serving only the setup page", flush=True)
+    srv = ThreadingHTTPServer((host, port), Handler)
+    print(f"Part Studio{' (cloud)' if CLOUD else ''} on http://{host}:{port}"
+          f"  (models: {MODELS})", flush=True)
     srv.serve_forever()

@@ -23,6 +23,10 @@ Part Studio web UI (scripts/studio.sh → http://127.0.0.1:8434, .venv-cad py3.1
   secondary interface for a Claude session in this repo.
 - The sections below on installing OctoPrint on the Mac are kept for the
   **fallback** local instance (127.0.0.1:5001) and for history.
+- **Cloud studio**: the same Part Studio also runs on Railway for designing
+  from a phone - password-gated, design only, never talks to the printer.
+  Designs come home via **☁ From your phone**
+  ([docs/cloud-studio.md](docs/cloud-studio.md)).
 
 ## Installing OctoPrint itself (macOS)
 
@@ -279,6 +283,14 @@ Added since the sections below were written (they remain accurate):
 The UI is stdlib Python + a vendored Three.js (`viewer/`), so it needs no
 extra dependencies and works offline. Claude Code sessions can launch it via
 the `part-studio` entry in `.claude/launch.json`. It binds to 127.0.0.1 only.
+
+### Cloud studio (design from a phone)
+
+The same studio also runs on Railway with `STUDIO_MODE=cloud` (built from the
+`Dockerfile`): password-gated, design only - no slicing, uploads or printer
+access - and laid out for a phone. Parts made there come home through
+**☁ From your phone** in this studio, with their slider, scale and rotation
+settings. Setup, security and variables: [docs/cloud-studio.md](docs/cloud-studio.md).
 
 ## Manual pipeline (no MCP, for debugging)
 

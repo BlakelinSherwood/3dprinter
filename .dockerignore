@@ -1,0 +1,15 @@
+.git
+.claude
+.venv-cad
+output
+uploads
+temp
+docs
+test-parts
+**/__pycache__
+models/.history
+models/.state
+models/imports
+*.stl
+*.gcode
+*.3mf
