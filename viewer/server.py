@@ -575,7 +575,19 @@ class SCALE_MENTION_RE:      # keeps the .search(...) call-site shape
 
 
 def support_analysis(stl_path):
-    """Decide whether a sliced part needs supports, from the geometry itself.
+    """support_analysis_mesh, for a part that's on disk rather than already
+    loaded (the common case: checking a just-sliced STL)."""
+    try:
+        import trimesh
+        return support_analysis_mesh(trimesh.load(str(stl_path), force="mesh"))
+    except Exception:
+        return {"needs_supports": False, "floating_bodies": 0,
+                "overhang_cm2": 0.0, "reasons": [],
+                "note": "analysis failed - relying on the slicer's own check"}
+
+
+def support_analysis_mesh(m):
+    """Decide whether a part needs supports, from the geometry itself.
 
     Two independent signals:
     - floating bodies: connected components whose lowest point never reaches
@@ -586,8 +598,6 @@ def support_analysis(stl_path):
     """
     try:
         import numpy as np
-        import trimesh
-        m = trimesh.load(str(stl_path), force="mesh")
         lo_z = float(m.bounds[0][2])
         reasons = []
         # A region only truly floats if there is AIR all the way down: parts
@@ -931,10 +941,16 @@ def as_shape(obj):
 def list_models():
     entries = []   # (mtime, item) - newest first so the default selection is
     for f in (IMPORTS.glob("*.stl") if IMPORTS.is_dir() else []):
-        entries.append((f.stat().st_mtime,
-                        {"name": f.stem, "summary": "imported mesh",
-                         "params": [], "imported": True,
-                         "state": cloudstudio.design_state(MODELS, f.stem)}))
+        parts_sidecar = IMPORTS / f"{f.stem}.parts.json"
+        entry = {"name": f.stem, "summary": "imported mesh",
+                 "params": [], "imported": True,
+                 "state": cloudstudio.design_state(MODELS, f.stem)}
+        if parts_sidecar.is_file():
+            try:
+                entry["parts"] = json.loads(parts_sidecar.read_text())["parts"]
+            except (OSError, ValueError, KeyError):
+                pass
+        entries.append((f.stat().st_mtime, entry))
     for f in MODELS.glob("*.py"):
         if f.stem.startswith("_"):
             continue
@@ -1200,6 +1216,7 @@ MATERIALS = ("pla", "petg", "tpu")
 # Mirror of check-gcode.py's envelopes: (nozzle_min, nozzle_max, bed_max).
 MATERIAL_ENV = {"pla": (190, 230, 70), "petg": (220, 260, 90), "tpu": (195, 245, 60)}
 ORCA_LIB = Path("/Applications/OrcaSlicer.app/Contents/Resources/profiles")
+ORCA_BIN = Path("/Applications/OrcaSlicer.app/Contents/MacOS/OrcaSlicer")
 CUSTOM_FILAMENT = OUTPUT / "_filament_custom.json"
 CUSTOM_META = OUTPUT / "_filament_custom.meta.json"
 
@@ -1384,7 +1401,197 @@ def custom_material_meta():
 
 def do_slice(name, settings=None):
     with _print_lock:
+        parts = IMPORTS / f"{name}.parts.json"
+        if parts.is_file():
+            return _do_slice_multipart(name, settings, parts)
         return _do_slice(name, settings)
+
+
+# ------------------- per-piece support on a gang plate -------------------
+# A gang plate normally collapses every picked model into one merged STL,
+# which is all test-slice.sh (and the slicer) ever sees - there is no way to
+# tell it "support this piece but not that one". Orca's CLI has no flag for
+# per-object settings either, but a project 3MF does carry them (verified
+# 2026-09-17): each <object> in Metadata/model_settings.config can carry its
+# own <metadata key="enable_support" value="0|1"/>, which overrides the
+# plate-wide value for that object only, in either direction. So a
+# multi-part plate is sliced as: real STLs (already positioned, one per
+# piece) -> Orca combines them into a project -> that project's per-object
+# config gets the requested overrides patched in -> re-sliced.
+#
+# Orca's own "floating regions" validity check turned out to be an
+# unreliable signal for this (verified empirically): it can heavily
+# over-warn on one invocation path and silently say nothing on another for
+# the exact same geometry. So it is never trusted here, in either direction
+# - --no-check suppresses it on the real slice, and this repo's own
+# support_analysis() ray-cast is what actually flags an unsupported piece,
+# as an advisory warning rather than a block (a short unsupported span often
+# prints fine; that is the user's call to make, not the slicer's to enforce).
+def _patch_object_support(three_mf_path, support_map):
+    """Rewrite a project 3MF in place, adding an enable_support override to
+    every object named in support_map (keyed by its source STL filename,
+    e.g. "buzz_laser.stl"). Raises if a name in support_map has no matching
+    object - a silent no-op here would mean an unsupported piece prints with
+    no support and no one finds out until the plate is on the bed."""
+    import zipfile
+    import xml.etree.ElementTree as ET
+
+    work = Path(tempfile.mkdtemp(prefix="patch3mf-"))
+    try:
+        with zipfile.ZipFile(three_mf_path) as z:
+            z.extractall(work)
+        cfg_path = work / "Metadata" / "model_settings.config"
+        tree = ET.parse(cfg_path)
+        root = tree.getroot()
+        matched = set()
+        for obj in root.findall("object"):
+            name_meta = obj.find("metadata[@key='name']")
+            fname = name_meta.get("value") if name_meta is not None else None
+            if fname in support_map:
+                node = ET.Element("metadata", {
+                    "key": "enable_support",
+                    "value": "1" if support_map[fname] else "0"})
+                obj.insert(list(obj).index(name_meta) + 1, node)
+                matched.add(fname)
+        missing = set(support_map) - matched
+        if missing:
+            raise RuntimeError(
+                f"could not match {sorted(missing)} to an object in the "
+                "sliced project - per-piece support was not applied")
+        tree.write(cfg_path, xml_declaration=True, encoding="UTF-8")
+        with zipfile.ZipFile(three_mf_path, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in work.rglob("*"):
+                if f.is_file():
+                    z.write(f, f.relative_to(work))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _run_orca(args, timeout=600):
+    """Run the Orca CLI directly (not via test-slice.sh, which assumes one
+    input STL). Every path passed to Orca must be absolute: the .app resets
+    its own working directory on launch, so a relative --export-3mf silently
+    lands inside the app bundle instead of erroring (verified 2026-09-17)."""
+    log = tempfile.NamedTemporaryFile(prefix="orca-multipart-", suffix=".log",
+                                      delete=False)
+    log.close()
+    p = subprocess.run([str(ORCA_BIN), *args, "--logfile", log.name],
+                       capture_output=True, text=True, timeout=timeout)
+    if p.returncode != 0:
+        text = Path(log.name).read_text(errors="replace")
+        hits = re.findall(r"message=(.*?), message_type=[12]", text)
+        Path(log.name).unlink(missing_ok=True)
+        raise RuntimeError("; ".join(dict.fromkeys(hits)) or
+                           (p.stdout + p.stderr)[-600:] or "Orca CLI failed")
+    Path(log.name).unlink(missing_ok=True)
+    return p
+
+
+def _do_slice_multipart(name, settings, sidecar_path):
+    """Slice a gang plate whose pieces each carry their own support choice
+    (see combine_models). Everything downstream of the extracted G-code -
+    the check-gcode.py safety gate, the .material marker, estimates - is
+    identical to a normal slice; only how the G-code gets made differs."""
+    sidecar = json.loads(sidecar_path.read_text())
+    parts = sidecar["parts"]
+    parts_dir = IMPORTS / f"{name}.parts"
+    missing = [p["file"] for p in parts if not (parts_dir / p["file"]).is_file()]
+    if missing:
+        raise FileNotFoundError(f"missing part file(s), re-combine the plate: {missing}")
+
+    settings = dict(settings or {})
+    material = str(settings.get("material") or "pla").lower()
+    custom = None
+    if material == "custom":
+        custom = custom_material_meta()
+        if not custom:
+            raise ValueError("no looked-up filament stored - use the lookup first")
+        material = custom["class"]
+    elif material not in MATERIALS:
+        raise ValueError(f"unknown material {material}")
+    copies = max(1, min(25, int(settings.get("copies") or 1)))
+    if copies > 1:
+        raise ValueError("copies > 1 isn't supported yet for a per-piece-support "
+                         "plate - set copies to 1, or use one support choice for "
+                         "the whole plate instead")
+    filament = (Path(CUSTOM_FILAMENT) if custom
+               else REPO / f"profiles/ender3v2/filament_{material}.json")
+
+    settings.pop("supports", None)   # plate-wide support has no meaning here
+    override = build_process_override(settings)
+    process_path = override[0] if override else REPO / "profiles/ender3v2/machine.json"
+    changed = list(override[1]) if override else []
+
+    stl_paths = [str(parts_dir / p["file"]) for p in parts]
+    project1 = OUTPUT / f"_{name}_step1.3mf"
+    project2 = OUTPUT / f"_{name}_step2.3mf"
+    try:
+        _run_orca([
+            "--load-settings", f"{REPO}/profiles/ender3v2/machine.json;{process_path}",
+            "--load-filaments", str(filament),
+            "--arrange", "0",           # parts are already positioned - do not reshuffle
+            "--slice", "0",
+            "--export-3mf", str(project1),
+            *stl_paths,
+        ])
+        support_map = {p["file"]: bool(p["support"]) for p in parts}
+        _patch_object_support(project1, support_map)
+        _run_orca(["--no-check", "--slice", "0", "--export-3mf", str(project2), str(project1)])
+    except (subprocess.TimeoutExpired, RuntimeError) as e:
+        for p in (project1, project2):
+            p.unlink(missing_ok=True)
+        return {"ok": False, "report": f"slice failed: {e}", "overrides": [],
+                "supports_auto": False, "gcode": None}
+
+    tmp_gcode = OUTPUT / f"{name}.gcode.tmp"
+    code, out = run_script([sys.executable, "-c",
+        "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extract('Metadata/plate_1.gcode', sys.argv[2])",
+        str(project2), str(OUTPUT / "_extract_tmp")])
+    extracted = OUTPUT / "_extract_tmp" / "Metadata" / "plate_1.gcode"
+    if code == 0 and extracted.is_file():
+        extracted.replace(tmp_gcode)
+    shutil.rmtree(OUTPUT / "_extract_tmp", ignore_errors=True)
+    for p in (project1, project2):
+        p.unlink(missing_ok=True)
+    if not tmp_gcode.is_file():
+        return {"ok": False, "report": "slice ran but produced no G-code",
+                "overrides": [], "supports_auto": False, "gcode": None}
+
+    with tmp_gcode.open() as f:
+        lines = sum(1 for _ in f)
+    ok = check_gcode_ok(tmp_gcode, material)
+    if not ok[0]:
+        tmp_gcode.unlink(missing_ok=True)
+        return {"ok": False, "report": "REFUSED - safety check failed:\n" + ok[1],
+                "overrides": changed, "supports_auto": False, "gcode": None}
+    tmp_gcode.replace(OUTPUT / f"{name}.gcode")
+
+    supported = [p["name"] for p in parts if p["support"]]
+    unsupported_risky = [p["name"] for p in parts
+                         if not p["support"] and p.get("needs_support_hint")]
+    changed.append("supports: " + (", ".join(supported) if supported else "none"))
+    report_lines = [f"Sliced OK: {OUTPUT}/{name}.gcode ({lines} lines of G-code)"]
+    for nm in unsupported_risky:
+        report_lines.append(
+            f"WARNING: {nm} has no support but its geometry suggests it may need "
+            "some (floating regions/overhangs) - it may sag or print incompletely")
+    if custom:
+        changed.append(f"filament: {custom['name']} ({material.upper()} rules)")
+    elif material != "pla":
+        changed.append(material.upper())
+    (OUTPUT / f"{name}.material").write_text(material)
+    result = {"ok": True, "report": "\n".join(report_lines), "overrides": changed,
+              "supports_auto": False, "gcode": f"output/{name}.gcode"}
+    result["estimates"] = gcode_estimates(OUTPUT / f"{name}.gcode")
+    return result
+
+
+def check_gcode_ok(gcode_path, material):
+    """Run scripts/check-gcode.py and return (passed, report) without the
+    subprocess-exit-code plumbing _do_slice's callers don't need."""
+    code, out = run_script([sys.executable, str(REPO / "scripts/check-gcode.py"),
+                            "--material", material, str(gcode_path)])
+    return code == 0, out
 
 
 def _do_slice(name, settings=None):
@@ -1680,10 +1887,18 @@ def import_url(url):
 BLENDER = "/Applications/Blender.app/Contents/MacOS/Blender"
 
 
-def combine_models(names, gap=6.0):
+def combine_models(names, gap=6.0, supports=None):
     """Pack several models side by side onto one build plate as a single
     printable model, so one print produces the whole set. Each model is
-    generated at its natural size, then shelf-packed within the 220x220 bed."""
+    generated at its natural size, then shelf-packed within the 220x220 bed.
+
+    supports, when given, is {name: bool} - which pieces should get support
+    when this plate is sliced. Passing it (even for just some names) turns
+    this into a "multi-part" plate: alongside the merged preview STL used
+    for the viewer, each piece is also saved as its own positioned STL plus
+    a sidecar recording each piece's support choice, and _do_slice_multipart
+    picks that up instead of slicing the merged mesh as one blob. Omit it
+    entirely for the old plate-wide-support behaviour."""
     import numpy as np
     import trimesh
     names = [safe_name(n) for n in (names or [])]
@@ -1713,6 +1928,7 @@ def combine_models(names, gap=6.0):
             cx, shelf_h = 0.0, 0.0
         m = it["m"].copy()
         m.apply_translation([cx - it["lo"][0], cy - it["lo"][1], -it["lo"][2]])
+        it["placed"] = m
         placed.append(m)
         cx += it["w"] + gap
         shelf_h = max(shelf_h, it["h"])
@@ -1720,8 +1936,8 @@ def combine_models(names, gap=6.0):
     combined = trimesh.util.concatenate(placed)
     # center the whole set on the plate, resting on z=0
     lo, hi = combined.bounds
-    combined.apply_translation([-(lo[0] + hi[0]) / 2.0,
-                                -(lo[1] + hi[1]) / 2.0, -lo[2]])
+    shift = np.array([-(lo[0] + hi[0]) / 2.0, -(lo[1] + hi[1]) / 2.0, -lo[2]])
+    combined.apply_translation(shift)
     stem = "combined_plate"
     IMPORTS.mkdir(parents=True, exist_ok=True)
     (IMPORTS / f"{stem}.orient.json").unlink(missing_ok=True)
@@ -1729,6 +1945,37 @@ def combine_models(names, gap=6.0):
     (IMPORTS / f"{stem}.json").write_text(json.dumps(
         {"title": f"{len(names)} models on one plate",
          "source": "combined: " + ", ".join(names)}, indent=2))
+
+    parts_sidecar = IMPORTS / f"{stem}.parts.json"
+    parts_sidecar.unlink(missing_ok=True)
+    parts_dir = IMPORTS / f"{stem}.parts"
+    if parts_dir.is_dir():
+        shutil.rmtree(parts_dir)      # always clear stale per-piece STLs from a
+                                      # previous multipart combine of this stem
+    parts_report = []
+    if supports is not None:
+        parts_dir.mkdir(parents=True)
+        # These get sliced with --arrange 0 (so our layout is kept exactly,
+        # not reshuffled) - that means real bed coordinates (0..220 corner
+        # to corner), not the viewer/preview's plate-centered-on-origin
+        # convention the merged STL above uses.
+        bed_shift = shift + np.array([PLATE_X / 2.0, PLATE_Y / 2.0, 0.0])
+        parts = []
+        for it in items:
+            m = it["placed"].copy()
+            m.apply_translation(bed_shift)
+            fname = f"{it['nm']}.stl"
+            m.export(str(parts_dir / fname))
+            hint = support_analysis_mesh(m)
+            want = bool(supports.get(it["nm"], hint["needs_supports"]))
+            parts.append({"name": it["nm"], "file": fname, "support": want,
+                         "needs_support_hint": hint["needs_supports"]})
+            parts_report.append(
+                f"{it['nm']}: {'support ON' if want else 'support off'}"
+                + (" (geometry suggests it needs support)"
+                   if hint["needs_supports"] and not want else ""))
+        parts_sidecar.write_text(json.dumps({"parts": parts}, indent=2))
+
     result = generate(stem, {})
     result["model"] = stem
     if oversized:
@@ -1738,6 +1985,8 @@ def combine_models(names, gap=6.0):
         result.setdefault("warnings", []).append(
             f"the set is {total_h:.0f}mm deep - too many for one {PLATE_Y:.0f}mm "
             f"plate; combine fewer, or print in batches")
+    if parts_report:
+        result.setdefault("warnings", []).extend(parts_report)
     result["combined"] = names
     return result
 
@@ -2485,7 +2734,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/combine":
                 return self._send(200, start_job(
                     combine_models, req.get("models"),
-                    float(req.get("gap") or 6.0)))
+                    float(req.get("gap") or 6.0), req.get("supports")))
             if self.path == "/api/gen3d":
                 return self._send(200, start_job(
                     gen3d, req.get("image"), req.get("image_name"),

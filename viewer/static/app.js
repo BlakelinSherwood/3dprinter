@@ -406,6 +406,13 @@ function updateStages() {
   for (const id of ['rotx', 'roty', 'rotz', 'rotreset', 'generate',
                     'photobtn', 'bpbtn', 'importbtn', 'findbtn'])
     $(id).disabled = busy;
+  // A gang plate combined with per-piece supports carries its own choice per
+  // object; the plate-wide checkbox has no effect on it (server ignores it).
+  const multipart = !!(m && m.parts);
+  $('ps_supports').disabled = busy || multipart;
+  $('ps_supports').closest('.check').title = multipart
+    ? 'This plate sets support per piece (from the gang-plate dialog) — this checkbox is ignored for it'
+    : '';
   renderPrintsum();
 }
 
@@ -519,8 +526,12 @@ function materialLabel() {
 
 function renderPrintsum() {
   const s = printSettings();
+  const m = currentModel();
   const extras = [];
-  if (s.supports) extras.push('supports');
+  if (m && m.parts) {
+    const on = m.parts.filter(p => p.support).map(p => p.name);
+    extras.push(on.length ? `supports: ${on.join(', ')}` : 'no supports (per piece)');
+  } else if (s.supports) extras.push('supports');
   if (s.brim) extras.push('brim');
   if (s.infill_pattern !== 'grid') extras.push(s.infill_pattern + ' infill');
   if (s.finish === 'textured') extras.push('textured');
@@ -1031,25 +1042,52 @@ $('gangbtn').onclick = () => {
   const pickable = models.filter(m => !m.error && m.name !== 'combined_plate');
   if (!pickable.length) { box.innerHTML = '<div class="fsub">no models yet</div>'; }
   for (const m of pickable) {
-    const row = document.createElement('label');
+    // Not a <label> wrapping both controls: the row toggles "pick" on click
+    // anywhere except the supports checkbox itself, which needs its own
+    // independent click target (a nested label here would double-toggle).
+    const row = document.createElement('div');
     row.className = 'gangrow';
     const cb = document.createElement('input');
-    cb.type = 'checkbox'; cb.value = m.name;
+    cb.type = 'checkbox'; cb.value = m.name; cb.className = 'gpick';
     cb.checked = (m.name === $('model').value);
     cb.onchange = updateGangCount;
     const nm = document.createElement('span');
     nm.className = 'gn'; nm.textContent = m.name; nm.title = m.name;
     const tag = document.createElement('span');
     tag.className = 'gt'; tag.textContent = m.imported ? 'import' : 'part';
-    row.append(cb, nm, tag);
+    const sup = document.createElement('label');
+    sup.className = 'gsup';
+    sup.title = 'Add support material under this piece only, when the plate is sliced';
+    sup.onclick = (ev) => ev.stopPropagation();
+    const supcb = document.createElement('input');
+    supcb.type = 'checkbox'; supcb.className = 'gsupcb';
+    sup.append(supcb, document.createTextNode(' supports'));
+    row.append(cb, nm, tag, sup);
+    row.onclick = (ev) => {
+      if (ev.target === cb) return;
+      cb.checked = !cb.checked;
+      updateGangCount();
+    };
     box.appendChild(row);
   }
   updateGangCount();
   $('gang').hidden = false;
 };
 $('gangclose').onclick = () => { $('gang').hidden = true; };
+function gangRows() {
+  return [...document.querySelectorAll('#ganglist .gangrow')];
+}
 function gangSelected() {
-  return [...document.querySelectorAll('#ganglist input:checked')].map(c => c.value);
+  return gangRows().filter(r => r.querySelector('.gpick').checked)
+    .map(r => r.querySelector('.gpick').value);
+}
+function gangSupportMap() {
+  const out = {};
+  for (const r of gangRows()) {
+    if (r.querySelector('.gpick').checked)
+      out[r.querySelector('.gpick').value] = r.querySelector('.gsupcb').checked;
+  }
+  return out;
 }
 function updateGangCount() {
   const n = gangSelected().length;
@@ -1060,19 +1098,22 @@ $('gango').onclick = async () => {
   if (busy) return;
   const picked = gangSelected();
   if (picked.length < 2) { log('pick at least two models to combine', 'bad'); return; }
+  const supports = gangSupportMap();
   setBusy(true);
   log(`combining ${picked.length} models onto one plate…`, 'dim');
   startProgress('combine', `packing ${picked.length} models onto the plate`, 30);
   let ok = false;
   try {
-    const res = await apiJob('/api/combine', { models: picked }, 'combine');
+    const res = await apiJob('/api/combine', { models: picked, supports }, 'combine');
     ok = true;
     $('gang').hidden = true;
     await refreshModels(res.model);
     showResult(res);
     state.generated = true;
     invalidateSlice('new combined plate');
-    log(`combined_plate ready — ${picked.length} models, slice & print together`, 'ok');
+    const withSupport = Object.entries(supports).filter(([, v]) => v).map(([k]) => k);
+    log(`combined_plate ready — ${picked.length} models, slice & print together` +
+        (withSupport.length ? ` (supports: ${withSupport.join(', ')})` : ' (no supports)'), 'ok');
     stageMsg(1, `combined ${picked.length} models onto one plate`, 'ok');
   } catch (e) { log(e.message, 'bad'); }
   endProgress(ok);
@@ -1623,10 +1664,14 @@ const FEATURE_COLORS = [
   0xd9c96a, 0xc8a2c8, 0x6a8759, 0x5a7a4a, 0x66b2a3, 0x4d8a80, 0x999999,
   0x555555, 0x777777,
 ];
+const SUPPORT_FEATURES = new Set([11, 12]);   // Support, Support interface
+const SUPPORT_HIGHLIGHT = 0xffb224;           // same amber used for focus/live markers
+const DIMMED = 0x333941;
+
 const tp = {
   on: false, name: null, printed: null, ghost: null, nozzle: null,
   offsets: null, layers: [], count: 0, liveTimer: null, live: false,
-  followLive: true,
+  followLive: true, colorsNormal: null, colorsSupportsOnly: null, supportsOnly: false,
 };
 
 function tpClear() {
@@ -1636,10 +1681,30 @@ function tpClear() {
   clearInterval(tp.liveTimer);
   tp.liveTimer = null;
   tp.on = false; tp.live = false; tp.name = null;
+  tp.supportsOnly = false;
+  $('tpsupports').classList.remove('on');
   $('tpui').hidden = true;
-  if (mesh) mesh.visible = true;
+  if (mesh) { mesh.visible = true; material.transparent = false; material.opacity = 1; }
   buildRulers();
   updateBadge();
+}
+
+function tpToggleSupportsOnly() {
+  tp.supportsOnly = !tp.supportsOnly;
+  $('tpsupports').classList.toggle('on', tp.supportsOnly);
+  tp.printed.geometry.attributes.color.array.set(
+    tp.supportsOnly ? tp.colorsSupportsOnly : tp.colorsNormal);
+  tp.printed.geometry.attributes.color.needsUpdate = true;
+  // fade the solid model in behind the isolated supports for context; the
+  // full-color toolpath is legible without it, so only show it in this mode
+  if (mesh) {
+    mesh.visible = tp.supportsOnly;
+    material.transparent = tp.supportsOnly;
+    material.opacity = tp.supportsOnly ? 0.2 : 1;
+  }
+  $('badge').textContent = tp.supportsOnly
+    ? 'toolpath view — support material highlighted, model faded for context'
+    : 'toolpath view — colors are print features';
 }
 
 function tpSetLayer(idx) {          // idx: 1-based layer number
@@ -1726,17 +1791,27 @@ async function openToolpath(name) {
     positions[i] -= PLATE / 2;
     positions[i + 1] -= PLATE / 2;
   }
-  // per-vertex colors from the feature palette
+  // per-vertex colors from the feature palette, plus a second "supports
+  // only" set (support material highlighted, everything else dimmed) that
+  // the 🦴 supports toggle swaps in without re-parsing the G-code.
   const colors = new Uint8Array(parsed.count * 6);
-  for (let s = 0; s < parsed.count; s++) {
-    const c = FEATURE_COLORS[features[s]] ?? 0x888888;
-    const r8 = (c >> 16) & 255, g8 = (c >> 8) & 255, b8 = c & 255;
+  const colorsSupportsOnly = new Uint8Array(parsed.count * 6);
+  const put = (arr, s, hex) => {
+    const r8 = (hex >> 16) & 255, g8 = (hex >> 8) & 255, b8 = hex & 255;
     const b = s * 6;
-    colors[b] = r8; colors[b+1] = g8; colors[b+2] = b8;
-    colors[b+3] = r8; colors[b+4] = g8; colors[b+5] = b8;
+    arr[b] = r8; arr[b+1] = g8; arr[b+2] = b8;
+    arr[b+3] = r8; arr[b+4] = g8; arr[b+5] = b8;
+  };
+  for (let s = 0; s < parsed.count; s++) {
+    const isSupport = SUPPORT_FEATURES.has(features[s]);
+    put(colors, s, FEATURE_COLORS[features[s]] ?? 0x888888);
+    put(colorsSupportsOnly, s, isSupport ? SUPPORT_HIGHLIGHT : DIMMED);
   }
+  tp.colorsNormal = colors;
+  tp.colorsSupportsOnly = colorsSupportsOnly;
+  tp.supportsOnly = false;
   const posAttr = new THREE.BufferAttribute(positions, 3);
-  const colAttr = new THREE.BufferAttribute(colors, 3, true);
+  const colAttr = new THREE.BufferAttribute(colors.slice(), 3, true);
 
   const gPrinted = new THREE.BufferGeometry();
   gPrinted.setAttribute('position', posAttr);
@@ -1775,6 +1850,7 @@ $('tpbtn').onclick = () => {
   else openToolpath($('model').value)
     .catch((e) => { log('toolpath view failed: ' + e.message, 'bad'); tpClear(); });
 };
+$('tpsupports').onclick = tpToggleSupportsOnly;
 $('tpclose').onclick = tpClear;
 $('tplayer').addEventListener('input', () => {
   tp.followLive = false;          // dragging the slider pauses live-follow
